@@ -175,13 +175,16 @@ public enum InjectionMethod: String, Sendable {
 public final class TextInjector: @unchecked Sendable {
     private let pasteboard: PasteboardProtocol
     private let eventPoster: EventPosterProtocol
+    private let isAccessibilityTrusted: () -> Bool
     
     public init(
         pasteboard: PasteboardProtocol = NSPasteboard.general,
-        eventPoster: EventPosterProtocol = SystemEventPoster()
+        eventPoster: EventPosterProtocol = SystemEventPoster(),
+        isAccessibilityTrusted: @escaping () -> Bool = { TextInjector.isAccessibilityTrusted() }
     ) {
         self.pasteboard = pasteboard
         self.eventPoster = eventPoster
+        self.isAccessibilityTrusted = isAccessibilityTrusted
     }
     
     /// Non-intrusive check for Accessibility permission (NEVER prompts unless explicitly asked)
@@ -264,7 +267,7 @@ public final class TextInjector: @unchecked Sendable {
     
     /// Direct injection via macOS Accessibility API (instant value insertion)
     public func tryDirectAccessibilityInjection(text: String) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
+        guard isAccessibilityTrusted() else { return false }
         
         let systemWide = AXUIElementCreateSystemWide()
         var focusedElementValue: AnyObject?

@@ -15,7 +15,7 @@ struct InjectionVerificationTest {
         // Test 1: Preparation
         let sample = "   hello world this is an echo live dictation test   "
         let prepared = injector.prepareText(sample)
-        assert(prepared == "hello world this is an echo live dictation test ", "Trailing space formatting failed")
+        assert(prepared == "Hello world this is an echo live dictation test ", "Capitalization or trailing space formatting failed")
         print("[1/4] Text preparation & trailing space: PASSED")
         
         // Test 2: Direct Unicode Typing
@@ -31,8 +31,19 @@ struct InjectionVerificationTest {
         print("[3/4] Clipboard retention: PASSED (Clipboard preserved: \"\(clipboardContent!)\")")
         
         // Test 4: Meeting Coordinator Append
-        let coord = MeetingCoordinator(phononRunner: PhononProcessRunner())
+        let tempDbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo_injection_\(UUID().uuidString).sqlite").path
+        let testDb = DatabaseManager(customPath: tempDbPath)
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: tempDbPath + suffix)
+            }
+        }
+        let coord = MeetingCoordinator(phononRunner: PhononProcessRunner(), database: testDb)
         coord.appendDictation(text: "Live speech utterance", duration: 1.5)
+        // appendDictation hops to the main queue when called off-main; drain it
+        // before reading the session.
+        await MainActor.run {}
         
         let segments = coord.activeSession?.segments ?? []
         assert(segments.count == 1, "Dictation not appended to meeting session")

@@ -200,19 +200,35 @@ codesign --force --deep --sign - \
 ### Running Automated Test Suites
 
 ```bash
-# Run SQLite & Word Memory Unit Tests (5/5)
+# Primary suite: Swift Testing (audio store, converter, VAD, SQLite,
+# word memory, formatting/injection, export, settings)
+swift test
+```
+
+On a Command Line Tools-only install (no Xcode selected), Swift Testing's macro
+plugin has to be pointed at explicitly:
+
+```bash
+swift test -Xswiftc -plugin-path \
+  -Xswiftc "$(xcode-select -p)/usr/lib/swift/host/plugins/testing"
+```
+
+Legacy standalone harnesses (kept for manual end-to-end checks):
+
+```bash
+# SQLite & Word Memory harness (5/5)
 swiftc -module-cache-path .build/ModuleCache -target arm64-apple-macos14.0 -lsqlite3 \
   Sources/Echo/Audio/*.swift Sources/Echo/Engine/STTTypes.swift Sources/Echo/Storage/*.swift \
   test_database.swift -o test_database && ./test_database
 
-# Run Text Injection & Auto-Paste Tests (4/4)
+# Text Injection & Auto-Paste harness (4/4)
 swiftc -module-cache-path .build/ModuleCache -target arm64-apple-macos14.0 -lsqlite3 \
   -framework AppKit -framework ApplicationServices -framework AVFoundation -framework ScreenCaptureKit -framework SwiftUI \
   Sources/Echo/Audio/*.swift Sources/Echo/Engine/*.swift Sources/Echo/Injection/*.swift \
   Sources/Echo/Storage/*.swift Sources/Echo/UI/*.swift Sources/Echo/UI/MeetingStudio/*.swift \
   Sources/Echo/AppCoordinator.swift test_injection.swift -o test_injection && ./test_injection
 
-# Run Full App Subsystem Verification (3/3)
+# Full app subsystem verification (3/3)
 ./Echo.app/Contents/MacOS/Echo --test
 ```
 

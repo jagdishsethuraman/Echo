@@ -6,6 +6,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     public let phononRunner: PhononProcessRunner
     public let micVAD: VoiceActivityDetector
     public let systemVAD: VoiceActivityDetector
+    private let database: DatabaseManager
     
     @Published public var activeSession: MeetingSession?
     @Published public var micLevel: Float = 0.0
@@ -23,21 +24,23 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     
     public init(
         dualChannel: DualChannelCoordinator = DualChannelCoordinator(),
-        phononRunner: PhononProcessRunner = PhononProcessRunner()
+        phononRunner: PhononProcessRunner = PhononProcessRunner(),
+        database: DatabaseManager = .shared
     ) {
         self.dualChannel = dualChannel
         self.phononRunner = phononRunner
+        self.database = database
         self.micVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         self.systemVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         
         // Restore recent session and past utterances from local SQLite database
-        if var lastSession = DatabaseManager.shared.fetchRecentSessions(limit: 1).first {
-            lastSession.segments = DatabaseManager.shared.fetchUtterances(sessionId: lastSession.id)
+        if var lastSession = database.fetchRecentSessions(limit: 1).first {
+            lastSession.segments = database.fetchUtterances(sessionId: lastSession.id)
             self.activeSession = lastSession
         } else {
             let initialSession = MeetingSession(title: "Echo Speech Stream", startTime: Date())
             self.activeSession = initialSession
-            DatabaseManager.shared.saveSession(initialSession)
+            database.saveSession(initialSession)
         }
         
         setupVADHandlers()
@@ -118,8 +121,8 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             if let s = self.activeSession {
                 self.onSessionUpdated?(s)
                 // Persist to local SQLite backend
-                DatabaseManager.shared.saveSession(s)
-                DatabaseManager.shared.saveUtterance(segment, sessionId: s.id, isDictation: true)
+                self.database.saveSession(s)
+                self.database.saveUtterance(segment, sessionId: s.id, isDictation: true)
             }
         }
         
@@ -138,7 +141,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             self.objectWillChange.send()
         }
         onSessionUpdated?(session)
-        DatabaseManager.shared.saveSession(session)
+        database.saveSession(session)
         
         setAudioPipelineActive(true)
         do {
@@ -164,7 +167,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             session.endTime = Date()
             self.activeSession = session
             self.objectWillChange.send()
-            DatabaseManager.shared.saveSession(session)
+            database.saveSession(session)
             return session
         }
     }
@@ -200,8 +203,8 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
                 self.objectWillChange.send()
                 if let s = self.activeSession {
                     self.onSessionUpdated?(s)
-                    DatabaseManager.shared.saveSession(s)
-                    DatabaseManager.shared.saveUtterance(segment, sessionId: s.id, isDictation: false)
+                    self.database.saveSession(s)
+                    self.database.saveUtterance(segment, sessionId: s.id, isDictation: false)
                 }
             }
         } catch {
