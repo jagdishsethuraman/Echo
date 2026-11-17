@@ -22,6 +22,8 @@ public enum PhononClientError: LocalizedError, Sendable {
     case serverError(statusCode: Int, message: String)
     case decodingError(String)
     case audioFileNotFound(String)
+    case executableNotFound(String)
+    case processTimedOut(TimeInterval)
     
     public var errorDescription: String? {
         switch self {
@@ -35,6 +37,10 @@ public enum PhononClientError: LocalizedError, Sendable {
             return "Failed to decode response: \(msg)"
         case .audioFileNotFound(let path):
             return "Audio file not found at path: \(path)"
+        case .executableNotFound(let detail):
+            return "Speech engine not found: \(detail)"
+        case .processTimedOut(let seconds):
+            return "Speech engine timed out after \(Int(seconds))s."
         }
     }
 }

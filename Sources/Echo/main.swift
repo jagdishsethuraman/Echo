@@ -19,7 +19,7 @@ struct EchoMain {
             menuManager.setupMenuBar()
             
             print("\n[1/3] Verifying Subsystem Wiring...")
-            print("  • Phonon Runner: \(coordinator.phononRunner.fermionPath)")
+            print("  • Phonon Runner: \(coordinator.phononRunner.fermionPath ?? "not found")")
             print("  • Hotkey Listener: Ready (Monitoring active)")
             print("  • Floating HUD Panel: Ready (canBecomeKey: \(coordinator.floatingPill.canBecomeKey))")
             print("  • Dual Audio Coordinator: Ready")
