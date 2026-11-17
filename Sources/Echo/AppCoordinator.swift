@@ -52,6 +52,17 @@ public final class AppCoordinator: ObservableObject {
             }
         }
         
+        hotkeyManager.onLockStateChanged = { [weak self] isLocked in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.floatingPill.updateState(.listening(
+                    audioLevel: self.currentAudioLevel,
+                    livePartial: self.currentLivePartial,
+                    isLocked: isLocked
+                ))
+            }
+        }
+        
         hotkeyManager.startMonitoring()
     }
     
@@ -60,7 +71,11 @@ public final class AppCoordinator: ObservableObject {
             Task { @MainActor in
                 guard let self = self, self.isDictating else { return }
                 self.currentAudioLevel = level
-                self.floatingPill.updateState(.listening(audioLevel: level, livePartial: self.currentLivePartial))
+                self.floatingPill.updateState(.listening(
+                    audioLevel: level,
+                    livePartial: self.currentLivePartial,
+                    isLocked: self.hotkeyManager.isLocked
+                ))
             }
         }
         
@@ -108,7 +123,7 @@ public final class AppCoordinator: ObservableObject {
             dictationPCMBuffer.removeAll()
         }
         
-        floatingPill.show(state: .listening(audioLevel: 0.2, livePartial: ""))
+        floatingPill.show(state: .listening(audioLevel: 0.2, livePartial: "", isLocked: hotkeyManager.isLocked))
         try? micEngine.startCapture()
         
         // Start live progressive partial transcription loop (every 650ms)
@@ -142,8 +157,13 @@ public final class AppCoordinator: ObservableObject {
             let trimmed = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty && self.isDictating {
                 let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
-                self.currentLivePartial = sanitized
-                self.floatingPill.updateState(.listening(audioLevel: self.currentAudioLevel, livePartial: sanitized))
+                let formatted = TextInjector.formatSentencePunctuationAndCapitalization(sanitized)
+                self.currentLivePartial = formatted
+                self.floatingPill.updateState(.listening(
+                    audioLevel: self.currentAudioLevel,
+                    livePartial: formatted,
+                    isLocked: self.hotkeyManager.isLocked
+                ))
             }
         } catch {
             try? FileManager.default.removeItem(at: tempFile)
@@ -161,6 +181,8 @@ public final class AppCoordinator: ObservableObject {
         
         micEngine.stopCapture()
         floatingPill.updateState(.transcribing)
+        
+        hotkeyManager.unlock()
         
         let capturedData: Data = bufferQueue.sync {
             let data = dictationPCMBuffer
@@ -207,10 +229,9 @@ public final class AppCoordinator: ObservableObject {
                 case .directTyping:
                     feedbackBadge = "✓ Typed into field"
                 case .syntheticPaste:
-                    feedbackBadge = "✓ Pasted (Cmd+V)"
+                    feedbackBadge = "✓ Auto-Pasted"
                 case .clipboardOnly:
-                    let isTrusted = AXIsProcessTrusted()
-                    feedbackBadge = isTrusted ? "✓ Copied to Clipboard" : "📋 Copied (Grant Accessibility to Auto-Paste)"
+                    feedbackBadge = "✓ Copied to Clipboard"
                 }
                 
                 floatingPill.updateState(.success(preview: "\(feedbackBadge): \"\(trimmed.prefix(25))...\""))

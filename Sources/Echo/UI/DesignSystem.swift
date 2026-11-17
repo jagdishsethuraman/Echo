@@ -26,13 +26,12 @@ public struct GlassmorphicPillModifier: ViewModifier {
     public func body(content: Content) -> some View {
         content
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(EchoTheme.cardBackground)
+                Capsule(style: .continuous)
+                    .fill(EchoTheme.cardBackground.opacity(0.96))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        Capsule(style: .continuous)
                             .stroke(EchoTheme.border, lineWidth: 1)
                     )
-                    .shadow(color: Color.black.opacity(0.6), radius: 18, x: 0, y: 8)
             )
     }
 }

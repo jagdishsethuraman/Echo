@@ -53,7 +53,7 @@ struct EchoMain {
             coordinator.showMeetingStudio()
         }
         
-        print("Echo Speech Intelligence running. Press Right ⌥ to dictate. Meeting Studio opened.")
+        print("Echo Speech Intelligence running. Hold ⌃ Control to dictate (or double-tap ⌃ to lock). Meeting Studio opened.")
         app.run()
     }
 }

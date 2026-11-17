@@ -2,7 +2,7 @@ import SwiftUI
 
 public enum PillState: Equatable, Sendable {
     case idle
-    case listening(audioLevel: Float, livePartial: String = "")
+    case listening(audioLevel: Float, livePartial: String = "", isLocked: Bool = false)
     case transcribing
     case success(preview: String)
     case error(message: String)
@@ -21,12 +21,12 @@ public struct FloatingPillView: View {
             case .idle:
                 EmptyView()
                 
-            case .listening(let level, let livePartial):
+            case .listening(let level, let livePartial, let isLocked):
                 // Pulsing recording dot
                 Circle()
                     .fill(EchoTheme.recordingRed)
                     .frame(width: 8, height: 8)
-                    .shadow(color: EchoTheme.recordingRed.opacity(0.8), radius: 6)
+                    .shadow(color: EchoTheme.recordingRed.opacity(0.8), radius: 5)
                 
                 // Real-time audio waveform bars
                 HStack(spacing: 3) {
@@ -35,25 +35,40 @@ public struct FloatingPillView: View {
                             .fill(EchoTheme.accent)
                             .frame(
                                 width: 3,
-                                height: max(6, CGFloat(level) * 32.0 * CGFloat((index % 3 + 1)) * 0.4)
+                                height: max(6, CGFloat(level) * 30.0 * CGFloat((index % 3 + 1)) * 0.4)
                             )
                             .animation(.spring(response: 0.15, dampingFraction: 0.5), value: level)
                     }
                 }
-                .frame(width: 32, height: 24)
+                .frame(width: 32, height: 22)
+                
+                // Hands-Free Lock Badge
+                if isLocked {
+                    HStack(spacing: 4) {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("LOCKED")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(EchoTheme.accent.opacity(0.22))
+                    .foregroundColor(EchoTheme.accent)
+                    .clipShape(Capsule())
+                }
                 
                 // Live Streamed Words
                 if livePartial.isEmpty {
-                    Text("Echo Listening...")
+                    Text(isLocked ? "Hands-Free (Tap ⌃ to Finish)..." : "Listening (Hold ⌃ · 2x Lock)...")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
                         .foregroundColor(EchoTheme.textSecondary)
                 } else {
                     HStack(spacing: 4) {
                         Text(livePartial)
-                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
                             .foregroundColor(EchoTheme.textPrimary)
                             .lineLimit(1)
-                            .truncationMode(.head)
+                            .truncationMode(.tail)
                         
                         // Blinking typing cursor
                         Rectangle()
@@ -81,7 +96,7 @@ public struct FloatingPillView: View {
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundColor(EchoTheme.textPrimary)
                     .lineLimit(1)
-                    .frame(maxWidth: 300, alignment: .leading)
+                    .truncationMode(.tail)
                 
             case .error(let msg):
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -92,12 +107,12 @@ public struct FloatingPillView: View {
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundColor(EchoTheme.textPrimary)
                     .lineLimit(1)
-                    .frame(maxWidth: 300, alignment: .leading)
+                    .truncationMode(.tail)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
         .glassmorphicPill()
-        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: state)
+        .animation(.spring(response: 0.28, dampingFraction: 0.8), value: state)
     }
 }

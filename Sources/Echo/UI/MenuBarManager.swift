@@ -120,7 +120,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Quick Dictation Toggle
         let dictateItem = NSMenuItem(
-            title: "Quick Dictation (Push-to-Talk: Right ⌥)",
+            title: "Quick Dictation (Hold ⌃ Control · 2x ⌃ Lock)",
             action: #selector(toggleDictation),
             keyEquivalent: "d"
         )

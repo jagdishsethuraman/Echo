@@ -24,7 +24,7 @@
 
 **Echo** unites two essential speech intelligence workflows into a single native binary:
 
-1. **Handy-Style Quick Dictation:** Hold `Right ⌥` anywhere on your Mac. Recognized words stream live into a non-activating floating HUD pill. When released, the finalized text is automatically typed or pasted into your active cursor in any app.
+1. **Handy-Style Quick Dictation:** Hold `⌃ Control` anywhere on your Mac (or double-tap `⌃` for hands-free lock mode). Recognized words stream live into a floating bottom-center HUD. When released (or tapped again), finalized, sentence-capitalized text is automatically typed or pasted into your active cursor in any app.
 2. **Meetily-Style Meeting Studio:** Record meetings without inviting bots or installing virtual audio drivers. Echo captures your microphone via CoreAudio and system attendee audio via `ScreenCaptureKit` loopback, slicing utterances with rolling VAD and generating structured Markdown notes.
 3. **Local SQLite & Word Memory:** Every session and dictation is archived in local SQLite (`echo.sqlite`). A built-in lexicon engine learns personal vocabulary, project jargon, and acronyms, automatically correcting phonetically misheard terms in real time.
 
@@ -45,9 +45,9 @@ Echo requires Accessibility permissions to monitor the `Right ⌥` hotkey and pa
 *(Echo uses a permanent designated requirement so permissions survive future rebuilds).*
 
 ### 3. Start Dictating
-- Press and hold **`Right ⌥`** in any application (Notion, Slack, Chrome, VS Code, Notes, TextEdit, Terminal).
-- Speak naturally: words stream live in the glowing floating pill with audio waveforms.
-- Release **`Right ⌥`**: text automatically injects into your active cursor!
+- Press and hold **`⌃ Control`** in any application (Notion, Slack, Chrome, VS Code, Notes, TextEdit, Terminal).
+- **Hands-Free Lock Mode:** Double-tap **`⌃ Control`** rapidly to lock recording on (displays `🔒 LOCKED` badge). Speak freely for as long as you want without holding any key, then tap **`⌃ Control`** once to finish and inject!
+- Release or unlock: text is automatically capitalized, punctuated, and injected into your active text box.
 
 ---
 

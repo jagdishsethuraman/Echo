@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-11-17
+
+### Added
+- **Control Key Push-to-Talk (`⌃`):** Migrated primary global dictation hotkey from Right Option to Control key to avoid collisions with macOS shortcuts and screenshot combinations.
+- **Hands-Free Double-Tap Lock Mode:** Double-tapping `⌃` within 380ms locks dictation into hands-free mode. Displays an amber `🔒 LOCKED` badge in the pill HUD. Tapping `⌃` once unlocks and injects text.
+- **Intelligent Sentence Capitalization & Proper Noun Engine:** Built `formatSentencePunctuationAndCapitalization` capitalizing first letters after sentence terminators (`. `, `? `, `! `, `\n`), fixing pronoun `"I"` and contractions (`"I'm"`, `"I'll"`, `"I've"`, `"I'd"`), and preserving proper nouns (`macOS`, `iPhone`).
+- **Dynamic Bottom-Center Pill HUD:** Centered HUD 28px above Dock/taskbar out of the user's line of sight; dynamically expands width between 260px and 720px as speech length grows without truncating beginning words.
+- **AppleScript System Events Paste Fallback:** Added tertiary keystroke injection path ensuring universal auto-paste across all macOS applications.
+
+### Fixed
+- **Eliminated Janky Gray Box Artifact:** Replaced rectangular window-clipped shadow with native seamless `Capsule()` styling and cleared `NSHostingView` layer background.
+- **Eliminated Defensive Permission Blocks:** Removed over-defensive `guard AXIsProcessTrusted()` checks in `typeUnicodeString` and `postCmdV` allowing auto-paste to fire reliably.
+- **Removed Head Truncation:** Switched transcription streaming text from `.truncationMode(.head)` to `.truncationMode(.tail)` so users read complete full sentences as they speak.
+
+---
+
 ## [1.1.0] - 2026-11-17
 
 ### Added
