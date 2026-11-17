@@ -57,15 +57,26 @@ public final class DatabaseManager: @unchecked Sendable {
             return
         }
         
-        // Sandbox fallback to local workspace data directory
-        let fallbackPath = "/Users/ragavij/Documents/Developer/Echo/data/echo.sqlite"
-        let fallbackDir = URL(fileURLWithPath: "/Users/ragavij/Documents/Developer/Echo/data")
-        try? FileManager.default.createDirectory(at: fallbackDir, withIntermediateDirectories: true)
+        // Sandbox-safe fallback to a per-user directory that does not depend on
+        // where the source tree happens to live.
+        if let db = db {
+            sqlite3_close(db)
+            self.db = nil
+        }
+        
+        let fallbackDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".echo", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: fallbackDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let fallbackPath = fallbackDirectory.appendingPathComponent("echo.sqlite").path
         
         if sqlite3_open(fallbackPath, &db) == SQLITE_OK {
             sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
             sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
-            print("Echo DatabaseManager: Initialized at workspace fallback: \(fallbackPath)")
+            print("Echo DatabaseManager: Initialized at fallback: \(fallbackPath)")
         } else {
             print("Echo DatabaseManager: Failed to open SQLite DB at \(dbPath) or \(fallbackPath)")
         }

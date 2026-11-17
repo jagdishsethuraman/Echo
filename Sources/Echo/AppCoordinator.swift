@@ -337,12 +337,32 @@ public final class AppCoordinator: ObservableObject {
         pasteboard.clearContents()
         pasteboard.setString(md, forType: .string)
         
-        let devDocsDir = "/Users/ragavij/Documents/Developer/dev_docs"
-        let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let filename = "echo_meeting_\(timestamp).md"
-        let outPath = "\(devDocsDir)/\(filename)"
-        try? md.write(toFile: outPath, atomically: true, encoding: .utf8)
-        print("Meeting exported to clipboard and \(outPath)")
+        do {
+            let directory = try EchoSettings.ensureExportDirectory()
+            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let filename = "echo_meeting_\(timestamp).md"
+            let url = directory.appendingPathComponent(filename)
+            try md.write(to: url, atomically: true, encoding: .utf8)
+            statusMessage = "Exported to \(url.path)"
+            print("Meeting exported to clipboard and \(url.path)")
+        } catch {
+            statusMessage = "Export failed: \(error.localizedDescription)"
+            presentExportError(error)
+        }
+    }
+    
+    private func presentExportError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Couldn't export meeting notes"
+        alert.informativeText = """
+        \(error.localizedDescription)
+        
+        The Markdown was copied to the clipboard. To choose a writable folder, run:
+        defaults write \(Bundle.main.bundleIdentifier ?? "com.ragavij.echo") echo.exportDirectory /path/to/folder
+        """
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
     
     public func openAccessibilitySettings() {
