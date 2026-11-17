@@ -37,3 +37,7 @@ test_database
 # Temporary audio files
 *.wav
 !test_samples/*.wav
+
+# Release Archives
+*.zip
+
