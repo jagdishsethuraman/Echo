@@ -20,14 +20,24 @@ public final class AppCoordinator: ObservableObject {
     @Published public var lastTranscript: String = ""
     
     // Live Progressive Dictation State
-    private var dictationPCMBuffer = Data()
-    private let bufferQueue = DispatchQueue(label: "com.echo.dictation.buffer")
+    private let dictationBuffer = AudioPCMBufferStore()
     private var partialTimer: Timer?
     private var durationTimer: Timer?
     private var dictationStartTime: Date?
     private var currentAudioLevel: Float = 0.2
     private var currentLivePartial: String = ""
     private var isTranscribingPartial: Bool = false
+    /// Byte count at the last partial attempt, used to skip decodes when no
+    /// new audio has arrived since the previous partial.
+    private var lastPartialByteCount: Int = 0
+    
+    /// Live partials decode only the most recent 12 seconds of audio, so the
+    /// cost of a partial stays constant instead of growing with the recording.
+    private static let partialWindowBytes = 12 * AudioPCMBufferStore.bytesPerSecond
+    /// 400 ms of audio is the minimum worth decoding.
+    private static let minimumPartialBytes = 12_800
+    /// Safety cap that finishes a run-away hands-free dictation.
+    private static let maximumDictationSeconds: TimeInterval = 600
     
     private var elapsedSeconds: Int {
         guard let start = dictationStartTime else { return 0 }
@@ -99,21 +109,9 @@ public final class AppCoordinator: ObservableObject {
         
         micEngine.onAudioBuffer = { [weak self] pcmBuffer in
             guard let self = self, self.isDictating else { return }
-            guard let channelData = pcmBuffer.floatChannelData?[0] else { return }
-            let frameCount = Int(pcmBuffer.frameLength)
-            
-            var int16Data = Data(count: frameCount * 2)
-            int16Data.withUnsafeMutableBytes { (rawBuffer: UnsafeMutableRawBufferPointer) in
-                let ptr = rawBuffer.bindMemory(to: Int16.self)
-                for i in 0..<frameCount {
-                    let floatVal = max(-1.0, min(1.0, channelData[i]))
-                    ptr[i] = Int16(floatVal * 32767.0)
-                }
-            }
-            
-            bufferQueue.sync {
-                self.dictationPCMBuffer.append(int16Data)
-            }
+            guard let canonical = AudioBufferConverter.resampleTo16kMono(pcmBuffer),
+                  let int16Data = AudioBufferConverter.int16PCM(from: canonical) else { return }
+            self.dictationBuffer.append(int16Data)
         }
     }
     
@@ -135,11 +133,10 @@ public final class AppCoordinator: ObservableObject {
         statusMessage = "Listening..."
         currentLivePartial = ""
         isTranscribingPartial = false
+        lastPartialByteCount = 0
         MenuBarManager.shared.updateMenuBarIcon(state: .dictating)
         
-        bufferQueue.sync {
-            dictationPCMBuffer.removeAll()
-        }
+        dictationBuffer.removeAll()
         
         dictationStartTime = Date()
         floatingPill.show(state: .listening(
@@ -163,6 +160,11 @@ public final class AppCoordinator: ObservableObject {
         durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self, self.isDictating else { return }
+                if let start = self.dictationStartTime,
+                   Date().timeIntervalSince(start) >= Self.maximumDictationSeconds {
+                    await self.finishDictation()
+                    return
+                }
                 self.floatingPill.updateState(.listening(
                     audioLevel: self.currentAudioLevel,
                     livePartial: self.currentLivePartial,
@@ -176,39 +178,50 @@ public final class AppCoordinator: ObservableObject {
     private func pollLivePartialTranscription() async {
         guard isDictating, !isTranscribingPartial else { return }
         
-        let snapshotData: Data = bufferQueue.sync {
-            return dictationPCMBuffer
-        }
+        let snapshot = dictationBuffer.snapshot(maxBytes: Self.partialWindowBytes)
         
         // Minimum 400ms of audio before first partial decode
-        guard snapshotData.count >= 12800 else { return }
+        guard snapshot.pcm.count >= Self.minimumPartialBytes else { return }
+        // Nothing new since the last attempt: decoding again would produce the
+        // same text and burn a full inference per timer tick.
+        guard snapshot.totalByteCount != lastPartialByteCount else { return }
+        lastPartialByteCount = snapshot.totalByteCount
         
         isTranscribingPartial = true
-        let wavData = AudioBufferConverter.packageWAV(pcmData: snapshotData, sampleRate: 16000, channels: 1)
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("echo_partial_\(UUID().uuidString).wav")
+        defer { isTranscribingPartial = false }
         
         do {
-            try wavData.write(to: tempFile)
-            let (partialText, _) = try await phononRunner.transcribe(fileURL: tempFile)
-            try? FileManager.default.removeItem(at: tempFile)
-            
+            let partialText = try await transcribePCM(snapshot.pcm)
             let trimmed = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && self.isDictating {
-                let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
-                let formatted = TextInjector.formatSentencePunctuationAndCapitalization(sanitized)
-                self.currentLivePartial = formatted
-                self.floatingPill.updateState(.listening(
-                    audioLevel: self.currentAudioLevel,
-                    livePartial: formatted,
-                    isLocked: self.hotkeyManager.isLocked,
-                    elapsedSeconds: self.elapsedSeconds
-                ))
-            }
+            guard !trimmed.isEmpty, self.isDictating else { return }
+            
+            let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
+            let formatted = TextInjector.formatSentencePunctuationAndCapitalization(sanitized)
+            // A truncated window starts mid-sentence, so mark it as such.
+            let display = snapshot.isTruncated ? "… " + formatted : formatted
+            self.currentLivePartial = display
+            self.floatingPill.updateState(.listening(
+                audioLevel: self.currentAudioLevel,
+                livePartial: display,
+                isLocked: self.hotkeyManager.isLocked,
+                elapsedSeconds: self.elapsedSeconds
+            ))
         } catch {
-            try? FileManager.default.removeItem(at: tempFile)
+            // A failed partial is not fatal: the next tick retries once new
+            // audio arrives. The final transcription still uses full audio.
         }
+    }
+    
+    /// Write raw PCM to a temporary WAV file, transcribe it, and clean up.
+    private func transcribePCM(_ pcmData: Data) async throws -> String {
+        let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
+        let tempFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo_audio_\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: tempFile) }
         
-        self.isTranscribingPartial = false
+        try wavData.write(to: tempFile)
+        let (transcript, _) = try await phononRunner.transcribe(fileURL: tempFile)
+        return transcript
     }
     
     public func finishDictation() async {
@@ -226,11 +239,9 @@ public final class AppCoordinator: ObservableObject {
         
         hotkeyManager.unlock()
         
-        let capturedData: Data = bufferQueue.sync {
-            let data = dictationPCMBuffer
-            dictationPCMBuffer.removeAll()
-            return data
-        }
+        let captured = dictationBuffer.takeAll()
+        let capturedData = captured.pcm
+        lastPartialByteCount = 0
         
         guard capturedData.count >= 3200 else { // Minimum 100ms
             floatingPill.hide()
@@ -239,17 +250,15 @@ public final class AppCoordinator: ObservableObject {
             return
         }
         
-        let wavData = AudioBufferConverter.packageWAV(pcmData: capturedData, sampleRate: 16000, channels: 1)
-        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("echo_dictate_\(UUID().uuidString).wav")
-        
         do {
-            try wavData.write(to: tempFile)
-            let (transcript, _) = try await phononRunner.transcribe(fileURL: tempFile)
-            try? FileManager.default.removeItem(at: tempFile)
+            let transcript = try await transcribePCM(capturedData)
             
             var trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty && !currentLivePartial.isEmpty {
+                // The live partial is only a window of the recording.
                 trimmed = currentLivePartial
+                    .replacingOccurrences(of: "… ", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
             }
             
             if !trimmed.isEmpty {
@@ -258,7 +267,7 @@ public final class AppCoordinator: ObservableObject {
                 self.lastTranscript = sanitized
                 
                 // 1. Add directly to Meeting Studio conversation stream & SQLite
-                let durationSec = Double(capturedData.count) / 32000.0
+                let durationSec = Double(capturedData.count) / Double(AudioPCMBufferStore.bytesPerSecond)
                 meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
                 
                 // 2. Direct injection into active text cursor + clipboard placement
@@ -283,7 +292,6 @@ public final class AppCoordinator: ObservableObject {
                 statusMessage = "Echo Ready (Phonon-2 Local)"
             }
         } catch {
-            try? FileManager.default.removeItem(at: tempFile)
             floatingPill.updateState(.error(message: error.localizedDescription))
             statusMessage = "Transcription failed"
         }
