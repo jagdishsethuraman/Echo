@@ -1,4 +1,5 @@
 import Foundation
+import CoreMedia
 
 public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     public let dualChannel: DualChannelCoordinator
@@ -14,6 +15,11 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     
     private let sessionQueue = DispatchQueue(label: "com.echo.meeting.session")
     private let tempDir = FileManager.default.temporaryDirectory
+    
+    /// Guards the audio pipeline flag because the callbacks fire on the audio
+    /// and ScreenCaptureKit sample queues, while start/stop happen on the main actor.
+    private let pipelineLock = NSLock()
+    private var audioPipelineActive = false
     
     public init(
         dualChannel: DualChannelCoordinator = DualChannelCoordinator(),
@@ -35,6 +41,42 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         }
         
         setupVADHandlers()
+        setupAudioPipelines()
+    }
+    
+    private var isAudioPipelineActive: Bool {
+        pipelineLock.lock()
+        defer { pipelineLock.unlock() }
+        return audioPipelineActive
+    }
+    
+    private func setAudioPipelineActive(_ active: Bool) {
+        pipelineLock.lock()
+        audioPipelineActive = active
+        pipelineLock.unlock()
+    }
+    
+    /// Feed the two VADs with canonical 16 kHz mono Int16 PCM.
+    private func setupAudioPipelines() {
+        // Microphone: `AudioEngineManager` already delivers 16 kHz mono Float32.
+        dualChannel.micEngine.onAudioBuffer = { [weak self] buffer in
+            guard let self = self, self.isAudioPipelineActive else { return }
+            guard let pcmData = AudioBufferConverter.int16PCM(from: buffer) else { return }
+            let level = AudioBufferConverter.calculateRMS(from: buffer)
+            self.micVAD.processChunk(pcmData: pcmData, rmsEnergy: level)
+        }
+        
+        // System loopback: ScreenCaptureKit hands us raw CMSampleBuffers that
+        // must be decoded and resampled before the VAD can slice them.
+        dualChannel.systemCapture.onSystemAudioBuffer = { [weak self] sampleBuffer in
+            guard let self = self, self.isAudioPipelineActive else { return }
+            guard let converted = AudioBufferConverter.pcmBuffer(from: sampleBuffer),
+                  let pcmData = AudioBufferConverter.int16PCM(from: converted) else {
+                return
+            }
+            let level = AudioBufferConverter.calculateRMS(from: converted)
+            self.systemVAD.processChunk(pcmData: pcmData, rmsEnergy: level)
+        }
     }
     
     private func setupVADHandlers() {
@@ -98,15 +140,20 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         onSessionUpdated?(session)
         DatabaseManager.shared.saveSession(session)
         
+        setAudioPipelineActive(true)
         do {
             try await dualChannel.startMeetingCapture()
         } catch {
+            setAudioPipelineActive(false)
             print("  ℹ Audio device capture notice: \(error.localizedDescription)")
         }
     }
     
     /// Stop current meeting session and finalize
     public func stopSession() async -> MeetingSession? {
+        // Stop feeding new audio before flushing, so nothing is appended after
+        // the flush emits the final segment.
+        setAudioPipelineActive(false)
         micVAD.flush()
         systemVAD.flush()
         

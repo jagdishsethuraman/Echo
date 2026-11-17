@@ -8,6 +8,20 @@ public final class DatabaseManager: @unchecked Sendable {
     private let lock = NSLock()
     private let dbPath: String
     
+    /// SQLite treats a NULL destructor as `SQLITE_STATIC`: it keeps the pointer
+    /// passed to `sqlite3_bind_text` after the call returns. Swift `String` and
+    /// `NSString` buffers are temporaries, so every bind must use
+    /// `SQLITE_TRANSIENT` to have SQLite copy the value instead.
+    private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    
+    private func bindText(_ stmt: OpaquePointer?, _ index: Int32, _ value: String?) {
+        if let value {
+            sqlite3_bind_text(stmt, index, value, -1, Self.sqliteTransient)
+        } else {
+            sqlite3_bind_null(stmt, index)
+        }
+    }
+    
     public init(customPath: String? = nil) {
         if let path = customPath {
             self.dbPath = path
@@ -120,9 +134,8 @@ public final class DatabaseManager: @unchecked Sendable {
         
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            let idStr = session.id.uuidString
-            sqlite3_bind_text(stmt, 1, (idStr as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 2, (session.title as NSString).utf8String, -1, nil)
+            bindText(stmt, 1, session.id.uuidString)
+            bindText(stmt, 2, session.title)
             sqlite3_bind_double(stmt, 3, session.startTime.timeIntervalSince1970)
             
             if let end = session.endTime {
@@ -131,11 +144,7 @@ public final class DatabaseManager: @unchecked Sendable {
                 sqlite3_bind_null(stmt, 4)
             }
             
-            if let summary = session.summaryMarkdown {
-                sqlite3_bind_text(stmt, 5, (summary as NSString).utf8String, -1, nil)
-            } else {
-                sqlite3_bind_null(stmt, 5)
-            }
+            bindText(stmt, 5, session.summaryMarkdown)
             
             sqlite3_bind_double(stmt, 6, Date().timeIntervalSince1970)
             
@@ -157,19 +166,13 @@ public final class DatabaseManager: @unchecked Sendable {
         
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            let idStr = segment.id.uuidString
-            sqlite3_bind_text(stmt, 1, (idStr as NSString).utf8String, -1, nil)
-            
-            if let sid = sessionId {
-                sqlite3_bind_text(stmt, 2, (sid.uuidString as NSString).utf8String, -1, nil)
-            } else {
-                sqlite3_bind_null(stmt, 2)
-            }
+            bindText(stmt, 1, segment.id.uuidString)
+            bindText(stmt, 2, sessionId?.uuidString)
             
             let speakerStr = segment.speaker == .you ? "you" : "meeting"
-            sqlite3_bind_text(stmt, 3, (speakerStr as NSString).utf8String, -1, nil)
+            bindText(stmt, 3, speakerStr)
             sqlite3_bind_double(stmt, 4, segment.timestamp.timeIntervalSince1970)
-            sqlite3_bind_text(stmt, 5, (segment.text as NSString).utf8String, -1, nil)
+            bindText(stmt, 5, segment.text)
             sqlite3_bind_double(stmt, 6, segment.durationSeconds)
             sqlite3_bind_int(stmt, 7, isDictation ? 1 : 0)
             
@@ -234,7 +237,7 @@ public final class DatabaseManager: @unchecked Sendable {
         var results: [TranscriptSegment] = []
         
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, (sessionId.uuidString as NSString).utf8String, -1, nil)
+            bindText(stmt, 1, sessionId.uuidString)
             
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let idCString = sqlite3_column_text(stmt, 0),
@@ -330,16 +333,24 @@ public final class DatabaseManager: @unchecked Sendable {
         
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, (newId.uuidString as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 2, (trimmedRaw as NSString).utf8String, -1, nil)
-            sqlite3_bind_text(stmt, 3, (trimmedPref as NSString).utf8String, -1, nil)
+            bindText(stmt, 1, newId.uuidString)
+            bindText(stmt, 2, trimmedRaw)
+            bindText(stmt, 3, trimmedPref)
             sqlite3_bind_int(stmt, 4, caseSensitive ? 1 : 0)
             sqlite3_bind_double(stmt, 5, now)
             sqlite3_bind_double(stmt, 6, now)
             
-            _ = sqlite3_step(stmt)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                print("Echo DatabaseManager: dictionary upsert error: \(String(cString: sqlite3_errmsg(db)))")
+            }
         }
         sqlite3_finalize(stmt)
+        
+        // Read back the persisted row: on conflict the upsert updates an existing
+        // row, so the freshly generated UUID and frequency above can be stale.
+        if let stored = fetchDictionaryEntryLocked(rawPattern: trimmedRaw) {
+            return stored
+        }
         
         return DictionaryEntry(
             id: newId,
@@ -349,6 +360,41 @@ public final class DatabaseManager: @unchecked Sendable {
             caseSensitive: caseSensitive,
             createdAt: Date(timeIntervalSince1970: now),
             updatedAt: Date(timeIntervalSince1970: now)
+        )
+    }
+    
+    /// Assumes the caller already holds `lock`.
+    private func fetchDictionaryEntryLocked(rawPattern: String) -> DictionaryEntry? {
+        let sql = "SELECT id, raw_pattern, preferred_replacement, frequency, case_sensitive, created_at, updated_at FROM dictionary WHERE raw_pattern = ? LIMIT 1;"
+        var stmt: OpaquePointer?
+        var result: DictionaryEntry?
+        
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, rawPattern)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                result = dictionaryEntry(from: stmt)
+            }
+        }
+        sqlite3_finalize(stmt)
+        return result
+    }
+    
+    private func dictionaryEntry(from stmt: OpaquePointer?) -> DictionaryEntry? {
+        guard let idCString = sqlite3_column_text(stmt, 0),
+              let rawCString = sqlite3_column_text(stmt, 1),
+              let prefCString = sqlite3_column_text(stmt, 2),
+              let uuid = UUID(uuidString: String(cString: idCString)) else {
+            return nil
+        }
+        
+        return DictionaryEntry(
+            id: uuid,
+            rawPattern: String(cString: rawCString),
+            preferredReplacement: String(cString: prefCString),
+            frequency: Int(sqlite3_column_int(stmt, 3)),
+            caseSensitive: sqlite3_column_int(stmt, 4) == 1,
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5)),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 6))
         )
     }
     
@@ -362,30 +408,8 @@ public final class DatabaseManager: @unchecked Sendable {
         
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                guard let idCString = sqlite3_column_text(stmt, 0),
-                      let rawCString = sqlite3_column_text(stmt, 1),
-                      let prefCString = sqlite3_column_text(stmt, 2) else {
-                    continue
-                }
-                
-                let idStr = String(cString: idCString)
-                let raw = String(cString: rawCString)
-                let pref = String(cString: prefCString)
-                let freq = Int(sqlite3_column_int(stmt, 3))
-                let caseSens = sqlite3_column_int(stmt, 4) == 1
-                let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5))
-                let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 6))
-                
-                if let uuid = UUID(uuidString: idStr) {
-                    results.append(DictionaryEntry(
-                        id: uuid,
-                        rawPattern: raw,
-                        preferredReplacement: pref,
-                        frequency: freq,
-                        caseSensitive: caseSens,
-                        createdAt: createdAt,
-                        updatedAt: updatedAt
-                    ))
+                if let entry = dictionaryEntry(from: stmt) {
+                    results.append(entry)
                 }
             }
         }
@@ -400,7 +424,7 @@ public final class DatabaseManager: @unchecked Sendable {
         let sql = "DELETE FROM dictionary WHERE id = ?;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_text(stmt, 1, (id.uuidString as NSString).utf8String, -1, nil)
+            bindText(stmt, 1, id.uuidString)
             _ = sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)
