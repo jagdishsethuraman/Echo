@@ -1,0 +1,32 @@
+# Swift Package Manager & Build Artifacts
+.build/
+.swiftpm/
+ModuleCache/
+
+# Compiled Mach-O Binaries
+/echo-app
+/echo-spike1
+/echo-spike2
+/echo-spike3
+/echo-spike4
+/echo-spike5
+/build_app_icon
+/inspect_bounds
+/inspect_icon
+/render_adaptive_pill
+/render_approved_design
+/render_icons
+/render_ui_mockups
+/test_injection
+/test_typing
+*.dSYM/
+/Echo.app/
+
+# macOS System Files
+.DS_Store
+*.swp
+*~
+
+# Temporary audio files
+*.wav
+!test_samples/*.wav
