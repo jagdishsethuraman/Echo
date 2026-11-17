@@ -1,25 +1,99 @@
-# Echo — Native macOS Speech Intelligence
+# Echo — Speech Intelligence for macOS
 
-> Unified push-to-talk cursor dictation, live streaming speech recognition, and bot-free dual-channel meeting intelligence for Apple Silicon. Powered 100% offline by `fermionresearch/phonon-2` (158 MB INT6 Parakeet-TDT 0.6B).
+<div align="center">
+
+![Platform](https://img.shields.io/badge/Platform-macOS%2014%2B%20(Sonoma%20%2F%20Sequoia)-black?style=for-the-badge&logo=apple)
+![Hardware](https://img.shields.io/badge/Architecture-Apple%20Silicon%20(arm64)-orange?style=for-the-badge&logo=apple)
+![Language](https://img.shields.io/badge/Language-Swift%205.10%20%2F%206.0-F05138?style=for-the-badge&logo=swift)
+![STT Engine](https://img.shields.io/badge/Engine-Phonon--2%20(158%20MB%20INT6)-purple?style=for-the-badge)
+![Storage](https://img.shields.io/badge/Database-SQLite%20(WAL%20Mode)-003B57?style=for-the-badge&logo=sqlite)
+![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
+
+<p align="center">
+  <b>Unified push-to-talk cursor dictation, live streaming transcription, and bot-free dual-channel meeting intelligence.</b><br>
+  Runs 100% locally and privately on Apple Silicon with <b>zero cloud dependencies</b>.
+</p>
+
+[Quick Start](#-quick-start) • [Core Capabilities](#-core-capabilities) • [Keyboard Shortcuts](#-keyboard-shortcuts) • [Architecture](#-architecture) • [Developer Guide](#-developer-guide) • [Roadmap](ROADMAP.md) • [Changelog](CHANGELOG.md)
+
+</div>
 
 ---
 
-## ✨ Features
+## 🦌 What is Echo?
 
-- **Global Quick Dictation (Push-to-Talk):** Hold `Right ⌥` to speak anywhere in macOS. Speech recognition runs with 37.7x real-time speed.
-- **Live Transcription Streaming:** Words stream live every 650ms into a non-activating floating HUD pill with dynamic audio waveform meters and blinking cursor.
-- **Universal Auto-Paste:** Upon hotkey release, transcripts are immediately pasted or typed directly into the active text field (Notion, Slack, Chrome, VS Code, Notes, TextEdit, Terminal) with permanent clipboard retention.
-- **Bot-Free Meeting Studio:** Dual-channel CoreAudio microphone tap combined with ScreenCaptureKit system audio loopback (`excludesCurrentProcessAudio = true`) isolates your voice from remote attendees without bots or virtual audio drivers.
-- **Swiss Atelier Bento Interface:** Dark mode studio (`#050507` obsidian, `#e5a93c` warm brass) featuring 62/38 Bento split, live VU meters, conversation stream, and executive notes.
-- **Adaptive Pill Menu Bar:** Sleek menu bar item dynamically adapting from minimal glyph `◉` to active recording timer `● MM:SS`.
-- **Local SQLite Backend (`echo.sqlite`):** Native WAL-mode database persistently storing sessions, timestamps, speaker tracks, and every quick dictation across app restarts.
-- **Word Memory & Custom Vocabulary:** Embedded lexicon engine remembering terms and autocorrecting phonetically misheard words (e.g. `"phone on"` → `"Phonon"`, `"anti gravity"` → `"Antigravity"`) in real time across live streams and active cursor typing.
-- **1-Click Second Brain / Obsidian Sync:** Direct export to clean Markdown notes with timestamps, duration, and speaker tags.
-- **100% Private & Offline:** Zero external cloud dependencies, zero telemetry, zero model RAM duplication (single native binary).
+**Echo** unites two essential speech intelligence workflows into a single native binary:
+
+1. **Handy-Style Quick Dictation:** Hold `Right ⌥` anywhere on your Mac. Recognized words stream live into a non-activating floating HUD pill. When released, the finalized text is automatically typed or pasted into your active cursor in any app.
+2. **Meetily-Style Meeting Studio:** Record meetings without inviting bots or installing virtual audio drivers. Echo captures your microphone via CoreAudio and system attendee audio via `ScreenCaptureKit` loopback, slicing utterances with rolling VAD and generating structured Markdown notes.
+3. **Local SQLite & Word Memory:** Every session and dictation is archived in local SQLite (`echo.sqlite`). A built-in lexicon engine learns personal vocabulary, project jargon, and acronyms, automatically correcting phonetically misheard terms in real time.
 
 ---
 
-## 🏗️ Architecture
+## ⚡ Quick Start
+
+### 1. Download or Run the App
+Launch `Echo.app` directly from your Applications folder or workspace:
+```bash
+open /Users/ragavij/Documents/Developer/Echo/Echo.app
+```
+
+### 2. Grant macOS Accessibility Permission (One-Time)
+Echo requires Accessibility permissions to monitor the `Right ⌥` hotkey and paste text into your active applications:
+1. Open **System Settings → Privacy & Security → Accessibility**.
+2. Select **Echo** and toggle it **ON**.
+*(Echo uses a permanent designated requirement so permissions survive future rebuilds).*
+
+### 3. Start Dictating
+- Press and hold **`Right ⌥`** in any application (Notion, Slack, Chrome, VS Code, Notes, TextEdit, Terminal).
+- Speak naturally: words stream live in the glowing floating pill with audio waveforms.
+- Release **`Right ⌥`**: text automatically injects into your active cursor!
+
+---
+
+## ✨ Core Capabilities
+
+### 🎙️ Global Push-to-Talk & Live Streaming HUD
+- **Sub-150ms Latency:** Powered by `fermionresearch/phonon-2` (Parakeet-TDT 0.6B INT6), delivering **37.7x real-time factor**.
+- **Live 650ms Streaming:** A non-activating floating HUD pill displays partial words and an animated blinking cursor while you speak.
+- **Zero Window Focus Theft:** The HUD uses an auxiliary `NSPanel` (`canBecomeKey = false`), ensuring your active text cursor never loses focus.
+
+### ⌨️ Universal Auto-Paste Pipeline
+Echo automatically routes text through a 3-tier injection cascade:
+1. **Permanent Pasteboard Save:** Declares text on `NSPasteboard.general` without wiping, guaranteeing manual `Cmd+V` fallback.
+2. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes.
+3. **Synthetic Cmd+V Paste:** Employs `.maskCommand` isolation and a 30ms settle delay to paste instantaneously across 100% of macOS apps.
+4. **Direct Unicode Typing:** Types UTF-16 code units via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events.
+
+### 👥 Bot-Free Dual-Channel Meeting Studio
+- **Acoustic Loopback:** Uses macOS 14+ `ScreenCaptureKit` (`capturesAudio = true`, `excludesCurrentProcessAudio = true`) to capture meeting audio with zero acoustic echo.
+- **Rolling Energy VAD:** Automatically segments speech upon 600ms natural silence boundaries.
+- **Swiss Atelier Bento Interface:** Obsidian (`#050507`) and atelier brass (`#e5a93c`) 62/38 split layout separating conversation streams from live AI notes.
+- **1-Click Obsidian Export:** Exports structured Markdown notes directly to your Second Brain or clipboard.
+
+### 🧠 Word Memory & Speech Lexicon Engine
+- **Persistent Vocabulary:** Built-in SQLite database stores phonetic replacements (e.g. `"phone on"` → `"Phonon"`, `"anti gravity"` → `"Antigravity"`).
+- **Whole-Word Boundary Accuracy:** Regular expressions (`\b(pattern)\b`) protect against destructive sub-word replacements.
+- **In-App Management:** Click the **`Memory (n)`** button in Meeting Studio to add custom terms, view active hotwords, or remove entries.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action | Description |
+| :--- | :--- | :--- |
+| **Hold `Right ⌥`** | **Push-to-Talk Dictation** | Stream live speech into floating HUD; auto-paste on release |
+| **`⇧⌘E`** | **Open Meeting Studio** | Toggle the Swiss Atelier Bento meeting studio window |
+| **`⇧⌘D`** | **Toggle Dictation** | Programmatic push-to-talk toggle switch |
+| **`⇧⌘C`** | **Copy Last Dictation** | Instantly re-copies most recent transcript to clipboard |
+| **`⇧⌘R`** | **Start/Stop Meeting** | Begin or conclude dual-channel meeting recording |
+| **`⌘Q`** | **Quit Echo** | Conclude audio streams and exit application |
+
+---
+
+## 🏛️ Architecture
+
+Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```
                                   ┌─────────────────────────────┐
@@ -32,76 +106,118 @@
      │  Floating HUD Panel    │                                   │    Meeting Studio Window  │
      │  • Non-activating NSPanel│                                  │    • Swiss Atelier Bento  │
      │  • Live 650ms Stream   │                                   │    • 62/38 Split Timeline │
-     │  • Audio Waveform VU   │                                   │    • Dual Channel Loops   │
+     │  • Audio Waveform VU   │                                   │    • Word Memory Drawer   │
      └────────────┬───────────┘                                   └─────────────┬─────────────┘
                   │                                                             │
-                  ▼                                                             ▼
-┌─────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                     AppCoordinator                                          │
-└───────────────────┬─────────────────────────────────────────────────────┬───────────────────┘
-                    │                                                     │
-                    ▼                                                     ▼
-    ┌──────────────────────────────┐                      ┌──────────────────────────────┐
-    │  Audio & Loopback Pipeline   │                      │  Phonon-2 Local STT Engine   │
-    │  • CoreAudio 16kHz Mic       │                      │  • Parakeet-TDT 0.6B INT6    │
-    │  • ScreenCaptureKit Loopback │                      │  • 158 MB Model Footprint    │
-    │  • VoiceActivityDetector     │                      │  • Metal / MLX Accelerated   │
-    └──────────────┬───────────────┘                      └──────────────┬───────────────┘
-                   │                                                     │
-                   └──────────────────────┬──────────────────────────────┘
-                                          ▼
-                         ┌─────────────────────────────────┐
-                         │      Text Injection Engine      │
-                         │  1. Permanent NSPasteboard Save │
-                         │  2. AXUIElement Direct Insertion│
-                         │  3. Synthetic Cmd+V Auto-Paste  │
-                         │  4. Unicode Direct Keystrokes   │
-                         └─────────────────────────────────┘
+                  └──────────────────────┬──────────────────────────────────────┘
+                                         ▼
+                      ┌────────────────────────────────────┐
+                      │          AppCoordinator            │
+                      └──────────────────┬─────────────────┘
+                                         │
+                 ┌───────────────────────┴───────────────────────┐
+                 ▼                                               ▼
+   ┌───────────────────────────┐                   ┌───────────────────────────┐
+   │ CoreAudio / ScreenCapture │                   │ Phonon-2 Local STT Engine │
+   │ • 16kHz Mic Tap           │                   │ • FastConformer-TDT INT6  │
+   │ • Speaker Loopback        │                   │ • Metal / MLX Accelerated │
+   │ • Rolling 0.6s Energy VAD │                   │ • Sub-150ms Latency       │
+   └─────────────┬─────────────┘                   └─────────────┬─────────────┘
+                 │                                               │
+                 └───────────────────────┬───────────────────────┘
+                                         ▼
+                        ┌─────────────────────────────────┐
+                        │      WordMemoryEngine           │
+                        │ • SQLite3 Lexicon (WAL Mode)    │
+                        │ • Word-Boundary Sanitization    │
+                        └────────────────┬────────────────┘
+                                         ▼
+                        ┌─────────────────────────────────┐
+                        │       TextInjector Cascade      │
+                        │ 1. Clipboard Placement          │
+                        │ 2. AXDirect Attribute Insert    │
+                        │ 3. Synthetic Cmd+V Auto-Paste   │
+                        │ 4. Unicode Typing Fallback      │
+                        └─────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Building & Packaging
+## 🛠️ Developer Guide
 
-### Prerequisites
-- macOS 14.0+ (Sonoma or Sequoia) on Apple Silicon (M1/M2/M3/M4).
-- Swift 5.10 / 6.0 command-line tools.
-- Phonon-2 runtime (`fermion`).
+### Directory Layout
 
-### Build Standalone App Bundle
+```
+Echo/
+├── Sources/Echo/
+│   ├── Audio/               # CoreAudio tap, ScreenCaptureKit loopback, VAD, WAV encoder
+│   ├── Engine/              # Phonon process runner, STT types, MeetingCoordinator
+│   ├── Injection/           # TextInjector, SystemEventPoster, HotkeyManager
+│   ├── Storage/             # SQLite DatabaseManager, WordMemoryEngine, MeetingModels
+│   ├── UI/                  # Floating HUD pill, MenuBarManager, DesignSystem
+│   │   └── MeetingStudio/   # Swiss Atelier Bento views, timeline, and controls
+│   └── main.swift           # Application entry point & lifecycle
+├── test_samples/            # 16kHz reference audio files for automated tests
+├── AppIcon.icns             # Multi-resolution macOS squircle icon
+├── Package.swift            # Swift package definition
+├── ARCHITECTURE.md          # Systems architecture deep dive
+├── ROADMAP.md               # Product roadmap and feature milestones
+└── CHANGELOG.md             # Semantic version history
+```
+
+### Compiling from Source
+
+Echo compiles with native command-line tools without external dependencies:
 
 ```bash
-# 1. Compile native binary
+# Compile release binary with SQLite and AppKit/SwiftUI frameworks
 swiftc -O -parse-as-library \
+  -module-cache-path .build/ModuleCache \
   -target arm64-apple-macos14.0 \
+  -lsqlite3 \
   -framework AppKit -framework ApplicationServices -framework AVFoundation -framework ScreenCaptureKit -framework SwiftUI \
   Sources/Echo/*.swift Sources/Echo/*/*.swift Sources/Echo/*/*/*.swift \
   -o echo-app
+```
 
-# 2. Package into macOS App Bundle
+### Packaging & Code Signing
+
+To preserve macOS Accessibility permissions across builds, seal the bundle with an explicit designated requirement:
+
+```bash
+# 1. Stage into .app bundle
 mkdir -p Echo.app/Contents/MacOS Echo.app/Contents/Resources
 cp echo-app Echo.app/Contents/MacOS/Echo
 cp AppIcon.icns Echo.app/Contents/Resources/AppIcon.icns
 
-# 3. Ad-hoc code sign with permanent designated requirement
+# 2. Ad-hoc sign with permanent designated requirement
 codesign --force --deep --sign - \
   --identifier com.ragavij.echo \
   -r="designated => identifier \"com.ragavij.echo\"" \
   Echo.app
 ```
 
----
+### Running Automated Test Suites
 
-## 🔒 macOS Permissions
+```bash
+# Run SQLite & Word Memory Unit Tests (5/5)
+swiftc -module-cache-path .build/ModuleCache -target arm64-apple-macos14.0 -lsqlite3 \
+  Sources/Echo/Audio/*.swift Sources/Echo/Engine/STTTypes.swift Sources/Echo/Storage/*.swift \
+  test_database.swift -o test_database && ./test_database
 
-Echo requires **Accessibility** permission to synthesize paste/typing events into target applications and monitor the `Right ⌥` push-to-talk hotkey:
+# Run Text Injection & Auto-Paste Tests (4/4)
+swiftc -module-cache-path .build/ModuleCache -target arm64-apple-macos14.0 -lsqlite3 \
+  -framework AppKit -framework ApplicationServices -framework AVFoundation -framework ScreenCaptureKit -framework SwiftUI \
+  Sources/Echo/Audio/*.swift Sources/Echo/Engine/*.swift Sources/Echo/Injection/*.swift \
+  Sources/Echo/Storage/*.swift Sources/Echo/UI/*.swift Sources/Echo/UI/MeetingStudio/*.swift \
+  Sources/Echo/AppCoordinator.swift test_injection.swift -o test_injection && ./test_injection
 
-1. Open **System Settings → Privacy & Security → Accessibility**.
-2. Add **Echo.app** and toggle **ON**.
-*(The application code signature uses `identifier "com.ragavij.echo"`, preserving permission across rebuilds).*
+# Run Full App Subsystem Verification (3/3)
+./Echo.app/Contents/MacOS/Echo --test
+```
 
 ---
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+Echo is released under the **MIT License**. See [LICENSE](LICENSE) for details.
