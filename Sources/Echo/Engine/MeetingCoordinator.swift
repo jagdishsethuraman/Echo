@@ -24,8 +24,15 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         self.micVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         self.systemVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         
-        let initialSession = MeetingSession(title: "Echo Speech Stream", startTime: Date())
-        self.activeSession = initialSession
+        // Restore recent session and past utterances from local SQLite database
+        if var lastSession = DatabaseManager.shared.fetchRecentSessions(limit: 1).first {
+            lastSession.segments = DatabaseManager.shared.fetchUtterances(sessionId: lastSession.id)
+            self.activeSession = lastSession
+        } else {
+            let initialSession = MeetingSession(title: "Echo Speech Stream", startTime: Date())
+            self.activeSession = initialSession
+            DatabaseManager.shared.saveSession(initialSession)
+        }
         
         setupVADHandlers()
     }
@@ -51,7 +58,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         }
     }
     
-    /// Append a completed Quick Dictation utterance into the unified session timeline
+    /// Append a completed Quick Dictation utterance into the unified session timeline & SQLite
     public func appendDictation(text: String, duration: Double = 1.0) {
         let segment = TranscriptSegment(
             speaker: .you,
@@ -68,6 +75,9 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             self.objectWillChange.send()
             if let s = self.activeSession {
                 self.onSessionUpdated?(s)
+                // Persist to local SQLite backend
+                DatabaseManager.shared.saveSession(s)
+                DatabaseManager.shared.saveUtterance(segment, sessionId: s.id, isDictation: true)
             }
         }
         
@@ -86,6 +96,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             self.objectWillChange.send()
         }
         onSessionUpdated?(session)
+        DatabaseManager.shared.saveSession(session)
         
         do {
             try await dualChannel.startMeetingCapture()
@@ -106,6 +117,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             session.endTime = Date()
             self.activeSession = session
             self.objectWillChange.send()
+            DatabaseManager.shared.saveSession(session)
             return session
         }
     }
@@ -123,10 +135,13 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
             
+            // Apply learned word memory & custom vocabulary
+            let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
+            
             let segment = TranscriptSegment(
                 speaker: track,
                 timestamp: Date(),
-                text: trimmed,
+                text: sanitized,
                 durationSeconds: duration
             )
             
@@ -138,6 +153,8 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
                 self.objectWillChange.send()
                 if let s = self.activeSession {
                     self.onSessionUpdated?(s)
+                    DatabaseManager.shared.saveSession(s)
+                    DatabaseManager.shared.saveUtterance(segment, sessionId: s.id, isDictation: false)
                 }
             }
         } catch {

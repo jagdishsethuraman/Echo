@@ -141,8 +141,9 @@ public final class AppCoordinator: ObservableObject {
             
             let trimmed = partialText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty && self.isDictating {
-                self.currentLivePartial = trimmed
-                self.floatingPill.updateState(.listening(audioLevel: self.currentAudioLevel, livePartial: trimmed))
+                let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
+                self.currentLivePartial = sanitized
+                self.floatingPill.updateState(.listening(audioLevel: self.currentAudioLevel, livePartial: sanitized))
             }
         } catch {
             try? FileManager.default.removeItem(at: tempFile)
@@ -188,14 +189,16 @@ public final class AppCoordinator: ObservableObject {
             }
             
             if !trimmed.isEmpty {
-                self.lastTranscript = trimmed
+                // Apply custom vocabulary & word memory replacements
+                let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
+                self.lastTranscript = sanitized
                 
-                // 1. Add directly to Meeting Studio conversation stream
+                // 1. Add directly to Meeting Studio conversation stream & SQLite
                 let durationSec = Double(capturedData.count) / 32000.0
-                meetingCoordinator.appendDictation(text: trimmed, duration: durationSec)
+                meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
                 
                 // 2. Direct injection into active text cursor + clipboard placement
-                let injectionResult = await textInjector.inject(text: trimmed)
+                let injectionResult = await textInjector.inject(text: sanitized)
                 
                 let feedbackBadge: String
                 switch injectionResult.method {

@@ -10,6 +10,8 @@ public struct MeetingStudioView: View {
     public var onToggleRecord: (() -> Void)?
     public var onExportMarkdown: (() -> Void)?
     
+    @ObservedObject var memoryState = WordMemoryState.shared
+    
     public init(
         session: MeetingSession,
         micLevel: Float = 0.0,
@@ -47,9 +49,31 @@ public struct MeetingStudioView: View {
                 Spacer()
                 
                 // Hardware & Telemetry meters
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     AudioMeterPill(label: "MIC", level: micLevel, color: EchoTheme.accent)
                     AudioMeterPill(label: "MEETING", level: systemLevel, color: EchoTheme.attendeeAccent)
+                    
+                    // Word Memory & Dictionary Button
+                    Button(action: {
+                        memoryState.reload()
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            memoryState.isVisible.toggle()
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "character.book.closed.fill")
+                                .font(.system(size: 9))
+                            Text("Memory (\(memoryState.entries.count))")
+                        }
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(memoryState.isVisible ? Color.black : EchoTheme.accent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(memoryState.isVisible ? EchoTheme.accent : EchoTheme.accent.opacity(0.12))
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.accent.opacity(0.4), lineWidth: 1))
+                    }
+                    .buttonStyle(PlainButtonStyle())
                     
                     // Meeting Record Toggle Button
                     Button(action: { onToggleRecord?() }) {
@@ -74,6 +98,12 @@ public struct MeetingStudioView: View {
             .padding(.vertical, 14)
             .background(EchoTheme.background)
             .overlay(Divider().background(EchoTheme.border), alignment: .bottom)
+            
+            // Word Memory Drawer
+            if memoryState.isVisible {
+                WordMemoryDrawerView(memoryState: memoryState)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             
             // Accessibility Permission Helper Banner (if needed)
             if !AXIsProcessTrusted() {
@@ -261,5 +291,101 @@ public struct AudioMeterPill: View {
             }
             .frame(width: 40, height: 4)
         }
+    }
+}
+
+struct WordMemoryDrawerView: View {
+    @ObservedObject var memoryState: WordMemoryState
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("WORD MEMORY & DICTIONARY // SQLITE PERSISTENCE")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(EchoTheme.accent)
+                Spacer()
+                Text("\(memoryState.entries.count) active hotwords")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(EchoTheme.textMuted)
+            }
+            
+            // Add Word Form
+            HStack(spacing: 8) {
+                TextField("Misheard text (e.g. phone on)", text: $memoryState.newRawWord)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .font(.system(size: 11, design: .monospaced))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(EchoTheme.cardBackground)
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.border, lineWidth: 1))
+                    .foregroundColor(EchoTheme.textPrimary)
+                
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(EchoTheme.accent)
+                
+                TextField("Remembered as (e.g. Phonon)", text: $memoryState.newPreferredWord)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .font(.system(size: 11, design: .monospaced))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(EchoTheme.cardBackground)
+                    .cornerRadius(6)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.border, lineWidth: 1))
+                    .foregroundColor(EchoTheme.textPrimary)
+                
+                Button(action: {
+                    memoryState.add()
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus.circle.fill")
+                        Text("Remember")
+                    }
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(EchoTheme.accent)
+                    .cornerRadius(6)
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            
+            // Chips / list of remembered words
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(memoryState.entries) { entry in
+                        HStack(spacing: 6) {
+                            Text(entry.rawPattern)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(EchoTheme.textSecondary)
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 8))
+                                .foregroundColor(EchoTheme.accent)
+                            Text(entry.preferredReplacement)
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundColor(EchoTheme.accent)
+                            
+                            Button(action: { memoryState.delete(id: entry.id) }) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(EchoTheme.textMuted)
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(EchoTheme.cardBackground)
+                        .cornerRadius(6)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.border, lineWidth: 1))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color(red: 10/255, green: 10/255, blue: 14/255))
+        .overlay(Divider().background(EchoTheme.border), alignment: .bottom)
     }
 }

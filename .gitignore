@@ -27,6 +27,13 @@ ModuleCache/
 *.swp
 *~
 
+# Local SQLite Database Files
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+test_database
+
 # Temporary audio files
 *.wav
 !test_samples/*.wav

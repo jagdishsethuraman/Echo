@@ -12,6 +12,8 @@
 - **Bot-Free Meeting Studio:** Dual-channel CoreAudio microphone tap combined with ScreenCaptureKit system audio loopback (`excludesCurrentProcessAudio = true`) isolates your voice from remote attendees without bots or virtual audio drivers.
 - **Swiss Atelier Bento Interface:** Dark mode studio (`#050507` obsidian, `#e5a93c` warm brass) featuring 62/38 Bento split, live VU meters, conversation stream, and executive notes.
 - **Adaptive Pill Menu Bar:** Sleek menu bar item dynamically adapting from minimal glyph `◉` to active recording timer `● MM:SS`.
+- **Local SQLite Backend (`echo.sqlite`):** Native WAL-mode database persistently storing sessions, timestamps, speaker tracks, and every quick dictation across app restarts.
+- **Word Memory & Custom Vocabulary:** Embedded lexicon engine remembering terms and autocorrecting phonetically misheard words (e.g. `"phone on"` → `"Phonon"`, `"anti gravity"` → `"Antigravity"`) in real time across live streams and active cursor typing.
 - **1-Click Second Brain / Obsidian Sync:** Direct export to clean Markdown notes with timestamps, duration, and speaker tags.
 - **100% Private & Offline:** Zero external cloud dependencies, zero telemetry, zero model RAM duplication (single native binary).
 
