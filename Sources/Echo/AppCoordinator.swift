@@ -23,9 +23,16 @@ public final class AppCoordinator: ObservableObject {
     private var dictationPCMBuffer = Data()
     private let bufferQueue = DispatchQueue(label: "com.echo.dictation.buffer")
     private var partialTimer: Timer?
+    private var durationTimer: Timer?
+    private var dictationStartTime: Date?
     private var currentAudioLevel: Float = 0.2
     private var currentLivePartial: String = ""
     private var isTranscribingPartial: Bool = false
+    
+    private var elapsedSeconds: Int {
+        guard let start = dictationStartTime else { return 0 }
+        return max(0, Int(Date().timeIntervalSince(start)))
+    }
     
     public init() {
         self.phononRunner = PhononProcessRunner()
@@ -37,6 +44,15 @@ public final class AppCoordinator: ObservableObject {
         
         setupHotkeyWiring()
         setupMicWiring()
+        setupPillWiring()
+    }
+    
+    private func setupPillWiring() {
+        floatingPill.onStopRequested = { [weak self] in
+            Task { @MainActor in
+                await self?.finishDictation()
+            }
+        }
     }
     
     private func setupHotkeyWiring() {
@@ -58,7 +74,8 @@ public final class AppCoordinator: ObservableObject {
                 self.floatingPill.updateState(.listening(
                     audioLevel: self.currentAudioLevel,
                     livePartial: self.currentLivePartial,
-                    isLocked: isLocked
+                    isLocked: isLocked,
+                    elapsedSeconds: self.elapsedSeconds
                 ))
             }
         }
@@ -74,7 +91,8 @@ public final class AppCoordinator: ObservableObject {
                 self.floatingPill.updateState(.listening(
                     audioLevel: level,
                     livePartial: self.currentLivePartial,
-                    isLocked: self.hotkeyManager.isLocked
+                    isLocked: self.hotkeyManager.isLocked,
+                    elapsedSeconds: self.elapsedSeconds
                 ))
             }
         }
@@ -123,7 +141,13 @@ public final class AppCoordinator: ObservableObject {
             dictationPCMBuffer.removeAll()
         }
         
-        floatingPill.show(state: .listening(audioLevel: 0.2, livePartial: "", isLocked: hotkeyManager.isLocked))
+        dictationStartTime = Date()
+        floatingPill.show(state: .listening(
+            audioLevel: 0.2,
+            livePartial: "",
+            isLocked: hotkeyManager.isLocked,
+            elapsedSeconds: 0
+        ))
         try? micEngine.startCapture()
         
         // Start live progressive partial transcription loop (every 650ms)
@@ -131,6 +155,20 @@ public final class AppCoordinator: ObservableObject {
         partialTimer = Timer.scheduledTimer(withTimeInterval: 0.65, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.pollLivePartialTranscription()
+            }
+        }
+        
+        // Start 1.0s elapsed timer
+        durationTimer?.invalidate()
+        durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, self.isDictating else { return }
+                self.floatingPill.updateState(.listening(
+                    audioLevel: self.currentAudioLevel,
+                    livePartial: self.currentLivePartial,
+                    isLocked: self.hotkeyManager.isLocked,
+                    elapsedSeconds: self.elapsedSeconds
+                ))
             }
         }
     }
@@ -162,7 +200,8 @@ public final class AppCoordinator: ObservableObject {
                 self.floatingPill.updateState(.listening(
                     audioLevel: self.currentAudioLevel,
                     livePartial: formatted,
-                    isLocked: self.hotkeyManager.isLocked
+                    isLocked: self.hotkeyManager.isLocked,
+                    elapsedSeconds: self.elapsedSeconds
                 ))
             }
         } catch {
@@ -177,6 +216,9 @@ public final class AppCoordinator: ObservableObject {
         isDictating = false
         partialTimer?.invalidate()
         partialTimer = nil
+        durationTimer?.invalidate()
+        durationTimer = nil
+        dictationStartTime = nil
         isTranscribingPartial = false
         
         micEngine.stopCapture()
@@ -252,7 +294,7 @@ public final class AppCoordinator: ObservableObject {
     // MARK: - Mode 2: Meeting Studio (Meetily Style)
     
     public func showMeetingStudio() {
-        MeetingStudioWindow.shared.toggleVisibility()
+        MeetingStudioWindow.shared.showWindow()
     }
     
     public func toggleMeetingRecording() {

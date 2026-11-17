@@ -4,24 +4,29 @@ import SwiftUI
 public final class FloatingPillPanel: NSPanel {
     private let stateModel: PillStateObservable
     private var dismissTimer: Timer?
+    public var onStopRequested: (() -> Void)?
     
     public init() {
         self.stateModel = PillStateObservable()
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 280, height: 46),
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 46),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         
-        self.level = .floating
+        // Priority level: .statusBar ensures it floats above full-screen windows and video calls
+        self.level = .statusBar
         self.isOpaque = false
         self.backgroundColor = .clear
         self.hasShadow = false
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         self.isMovableByWindowBackground = false
         
-        let hostingView = NSHostingView(rootView: FloatingPillContainer(stateModel: stateModel))
+        let container = FloatingPillContainer(stateModel: stateModel) { [weak self] in
+            self?.onStopRequested?()
+        }
+        let hostingView = NSHostingView(rootView: container)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.autoresizingMask = [.width, .height]
@@ -36,7 +41,7 @@ public final class FloatingPillPanel: NSPanel {
         return false
     }
     
-    public func show(state: PillState = .listening(audioLevel: 0.2, livePartial: "", isLocked: false)) {
+    public func show(state: PillState = .listening(audioLevel: 0.2, livePartial: "", isLocked: false, elapsedSeconds: 0)) {
         dismissTimer?.invalidate()
         dismissTimer = nil
         
@@ -88,22 +93,23 @@ public final class FloatingPillPanel: NSPanel {
         switch state {
         case .idle:
             return 220
-        case .listening(_, let livePartial, let isLocked):
-            let lockBonus: CGFloat = isLocked ? 68 : 0
+        case .listening(_, let livePartial, let isLocked, _):
+            let lockBonus: CGFloat = isLocked ? 60 : 0
+            let controlsPadding: CGFloat = 175 + lockBonus // dot + waveform + timer + stop button
             if livePartial.isEmpty {
-                return 260 + lockBonus
+                return max(320, controlsPadding + 140)
             } else {
                 let estTextWidth = CGFloat(livePartial.count) * 7.5
-                return min(720, max(260 + lockBonus, estTextWidth + 120 + lockBonus))
+                return min(740, max(320, estTextWidth + controlsPadding))
             }
         case .transcribing:
-            return 240
+            return 260
         case .success(let preview):
             let estTextWidth = CGFloat(preview.count) * 7.2
-            return min(640, max(260, estTextWidth + 90))
+            return min(640, max(280, estTextWidth + 90))
         case .error(let msg):
             let estTextWidth = CGFloat(msg.count) * 7.2
-            return min(580, max(260, estTextWidth + 90))
+            return min(580, max(280, estTextWidth + 90))
         }
     }
     
@@ -138,12 +144,14 @@ public final class PillStateObservable: ObservableObject {
 
 public struct FloatingPillContainer: View {
     @ObservedObject var stateModel: PillStateObservable
+    var onStop: (() -> Void)?
     
-    public init(stateModel: PillStateObservable) {
+    public init(stateModel: PillStateObservable, onStop: (() -> Void)? = nil) {
         self.stateModel = stateModel
+        self.onStop = onStop
     }
     
     public var body: some View {
-        FloatingPillView(state: stateModel.state)
+        FloatingPillView(state: stateModel.state, onStop: onStop)
     }
 }

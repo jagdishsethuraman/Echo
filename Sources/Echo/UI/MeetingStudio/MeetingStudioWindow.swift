@@ -24,13 +24,20 @@ public final class MeetingStudioWindow: NSWindow {
         self.contentView = hostingView
     }
     
+    public func showWindow() {
+        if self.isMiniaturized {
+            self.deminiaturize(nil)
+        }
+        self.makeKeyAndOrderFront(nil)
+        self.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
     public func toggleVisibility() {
-        if self.isVisible {
+        if self.isVisible && self.isKeyWindow {
             self.orderOut(nil)
         } else {
-            self.center()
-            self.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            showWindow()
         }
     }
 }

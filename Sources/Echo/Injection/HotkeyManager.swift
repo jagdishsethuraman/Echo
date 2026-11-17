@@ -9,8 +9,10 @@ public final class HotkeyManager: @unchecked Sendable {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var isKeyDown: Bool = false
-    private var lastControlDownTime: TimeInterval = 0
+    private var keyDownTime: TimeInterval = 0
+    private var lastKeyUpTime: TimeInterval = 0
     public private(set) var isLocked: Bool = false
+    private var pendingReleaseWorkItem: DispatchWorkItem?
     
     public init() {}
     
@@ -39,6 +41,9 @@ public final class HotkeyManager: @unchecked Sendable {
     }
     
     public func stopMonitoring() {
+        pendingReleaseWorkItem?.cancel()
+        pendingReleaseWorkItem = nil
+        
         if let g = globalMonitor {
             NSEvent.removeMonitor(g)
             globalMonitor = nil
@@ -56,43 +61,62 @@ public final class HotkeyManager: @unchecked Sendable {
             
             if controlPressed && !isKeyDown {
                 isKeyDown = true
-                let elapsed = now - lastControlDownTime
-                lastControlDownTime = now
+                keyDownTime = now
                 
-                // If already in locked hands-free recording, tapping Control finishes and unlocks
+                // 1. If currently in locked hands-free mode, tapping Control unlocks and stops
                 if isLocked {
                     isLocked = false
+                    pendingReleaseWorkItem?.cancel()
+                    pendingReleaseWorkItem = nil
                     onLockStateChanged?(false)
                     onKeyUp?()
                     return
                 }
                 
-                // Double-click Control within 380ms triggers Hands-Free Lock Mode
-                if elapsed < 0.38 {
+                // 2. Check if this is the 2nd tap of a rapid double-tap (<300ms from 1st release)
+                if let pending = pendingReleaseWorkItem, !pending.isCancelled {
+                    pending.cancel()
+                    pendingReleaseWorkItem = nil
                     isLocked = true
                     onLockStateChanged?(true)
-                    onKeyDown?()
+                    // Recording was already started on 1st tap; seamless continuation!
                     return
                 }
                 
-                // Normal push-to-talk trigger
+                // 3. Normal initial press: start dictation
                 onKeyDown?()
                 
             } else if !controlPressed && isKeyDown {
                 isKeyDown = false
+                let holdDuration = now - keyDownTime
+                lastKeyUpTime = now
                 
-                // In locked hands-free mode, releasing the key does NOT stop recording
+                // If in locked hands-free mode, releasing the key does NOT stop recording
                 if isLocked {
                     return
                 }
                 
-                // Normal push-to-talk release finishes recording and injects text
-                onKeyUp?()
+                // If held for longer than 350ms, it is standard push-to-talk: finish immediately
+                if holdDuration > 0.35 {
+                    onKeyUp?()
+                    return
+                }
+                
+                // If tapped briefly (<350ms), wait 260ms to see if a 2nd tap comes to activate Lock Mode
+                let workItem = DispatchWorkItem { [weak self] in
+                    guard let self = self, !self.isLocked else { return }
+                    self.pendingReleaseWorkItem = nil
+                    self.onKeyUp?()
+                }
+                pendingReleaseWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.26, execute: workItem)
             }
         }
     }
     
     public func unlock() {
+        pendingReleaseWorkItem?.cancel()
+        pendingReleaseWorkItem = nil
         isLocked = false
         onLockStateChanged?(false)
     }
