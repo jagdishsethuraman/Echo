@@ -16,8 +16,8 @@ public final class FloatingPillPanel: NSPanel {
             defer: false
         )
         
-        // Priority level: .statusBar ensures it floats above full-screen windows and video calls
-        self.level = .statusBar
+        // Priority level: .popUpMenu ensures it stays pinned above video calls and full-screen windows
+        self.level = .popUpMenu
         self.isOpaque = false
         self.backgroundColor = .clear
         self.hasShadow = false

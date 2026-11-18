@@ -102,14 +102,14 @@ public final class HotkeyManager: @unchecked Sendable {
                     return
                 }
                 
-                // If tapped briefly (<350ms), wait 260ms to see if a 2nd tap comes to activate Lock Mode
+                // If tapped briefly (<350ms), wait 380ms to see if a 2nd tap comes to activate Lock Mode
                 let workItem = DispatchWorkItem { [weak self] in
                     guard let self = self, !self.isLocked else { return }
                     self.pendingReleaseWorkItem = nil
                     self.onKeyUp?()
                 }
                 pendingReleaseWorkItem = workItem
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.26, execute: workItem)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: workItem)
             }
         }
     }

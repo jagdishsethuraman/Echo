@@ -51,15 +51,16 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
             button.title = ""
 
         case .dictating:
-            stopRecordingTimer()
+            startRecordingTimer()
             setStatusIcon("waveform.badge.mic", accessibilityLabel: "Echo dictating", tint: Self.frostTint)
-            button.title = ""
+            updateRecordingTitle()
 
         case .meetingRecording:
             startRecordingTimer()
             setStatusIcon("record.circle.fill", accessibilityLabel: "Meeting recording", tint: .systemRed)
             updateRecordingTitle()
         }
+        rebuildMenu()
     }
 
     private func setStatusIcon(_ symbolName: String, accessibilityLabel: String, tint: NSColor?) {
@@ -138,8 +139,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         menu.addItem(meetingItem)
         
         // Quick Dictation Toggle
+        let dictateTitle = currentState == .dictating ? "Stop Dictation" : "Start Dictation"
         let dictateItem = NSMenuItem(
-            title: "Toggle Dictation",
+            title: dictateTitle,
             action: #selector(toggleDictation),
             keyEquivalent: "d"
         )
@@ -213,8 +215,8 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
     }
     
     @objc private func openMeetingStudio() {
-        Task { @MainActor in
-            coordinator.showMeetingStudio()
+        DispatchQueue.main.async { [weak self] in
+            self?.coordinator.showMeetingStudio()
         }
     }
     

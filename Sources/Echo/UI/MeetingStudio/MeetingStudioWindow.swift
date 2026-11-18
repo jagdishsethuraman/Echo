@@ -24,6 +24,7 @@ public final class MeetingStudioWindow: NSWindow {
         self.appearance = NSAppearance(named: .darkAqua)
         self.minSize = NSSize(width: 840, height: 560)
         self.setFrameAutosaveName("EchoMeetingStudioWindow")
+        self.collectionBehavior = [.moveToActiveSpace, .participatesInCycle, .fullScreenAuxiliary]
         self.center()
 
         let hostingView = NSHostingView(rootView: MeetingStudioHostView())
