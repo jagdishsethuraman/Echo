@@ -20,6 +20,7 @@ public final class AudioHub: @unchecked Sendable {
     public typealias MicLevelObserver = @Sendable (Float) -> Void
     public typealias SystemBufferObserver = @Sendable (CMSampleBuffer) -> Void
     public typealias SystemLevelObserver = @Sendable (Float) -> Void
+    public typealias AudioErrorObserver = @Sendable (Error) -> Void
     
     public let micEngine: AudioEngineManager
     public let systemCapture: SystemAudioCapture
@@ -29,6 +30,9 @@ public final class AudioHub: @unchecked Sendable {
     private var micLevelObservers: [UUID: MicLevelObserver] = [:]
     private var systemBufferObservers: [UUID: SystemBufferObserver] = [:]
     private var systemLevelObservers: [UUID: SystemLevelObserver] = [:]
+    private var errorObservers: [UUID: AudioErrorObserver] = [:]
+    
+    public private(set) var lastError: Error?
     
     private var micRetainCount = 0
     private var systemRetainCount = 0
@@ -58,6 +62,9 @@ public final class AudioHub: @unchecked Sendable {
         }
         systemCapture.onSystemVolumeLevel = { [weak self] level in
             self?.broadcastSystemLevel(level)
+        }
+        systemCapture.onCaptureFailed = { [weak self] error in
+            self?.broadcastError(error)
         }
     }
     
@@ -99,12 +106,22 @@ public final class AudioHub: @unchecked Sendable {
         return token
     }
     
+    @discardableResult
+    public func addErrorObserver(_ observer: @escaping AudioErrorObserver) -> UUID {
+        let token = UUID()
+        lock.lock()
+        errorObservers[token] = observer
+        lock.unlock()
+        return token
+    }
+    
     public func removeObserver(_ token: UUID) {
         lock.lock()
         micBufferObservers.removeValue(forKey: token)
         micLevelObservers.removeValue(forKey: token)
         systemBufferObservers.removeValue(forKey: token)
         systemLevelObservers.removeValue(forKey: token)
+        errorObservers.removeValue(forKey: token)
         lock.unlock()
     }
     
@@ -183,6 +200,16 @@ public final class AudioHub: @unchecked Sendable {
         }
     }
     
+    func broadcastError(_ error: Error) {
+        lock.lock()
+        self.lastError = error
+        lock.unlock()
+        let observers = snapshotErrorObservers()
+        for observer in observers {
+            observer(error)
+        }
+    }
+    
     // MARK: - Lock-protected state
     
     private func bumpMicRetainCount() -> Bool {
@@ -235,6 +262,12 @@ public final class AudioHub: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Array(systemLevelObservers.values)
+    }
+    
+    private func snapshotErrorObservers() -> [AudioErrorObserver] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(errorObservers.values)
     }
     
     /// Returns `true` when the level should be delivered. Zero is always

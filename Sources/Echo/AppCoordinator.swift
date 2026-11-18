@@ -290,9 +290,21 @@ public final class AppCoordinator: ObservableObject {
                 let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
                 self.lastTranscript = sanitized
                 
-                // 1. Add directly to Meeting Studio conversation stream & SQLite
+                // 1. Separate quick dictations from meeting sessions:
+                // Only append to meeting timeline if a meeting is actively in progress;
+                // otherwise persist to SQLite as standalone dictation.
                 let durationSec = Double(capturedData.count) / Double(AudioPCMBufferStore.bytesPerSecond)
-                meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
+                if isMeetingActive {
+                    meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
+                } else {
+                    let segment = TranscriptSegment(
+                        speaker: .you,
+                        timestamp: Date(),
+                        text: sanitized,
+                        durationSeconds: durationSec
+                    )
+                    DatabaseManager.shared.saveUtterance(segment, sessionId: nil, isDictation: true)
+                }
                 
                 // 2. Direct injection into active text cursor + clipboard placement
                 let injectionResult = await textInjector.inject(text: sanitized)

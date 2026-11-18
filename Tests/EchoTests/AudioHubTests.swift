@@ -95,4 +95,19 @@ struct AudioHubTests {
         hub.broadcastMicLevel(0)
         #expect(recorder.snapshot == [0.5, 0, 0])
     }
+    
+    @Test func errorFansOutToEveryObserver() {
+        let hub = AudioHub()
+        let recorder = ValueRecorder<String>()
+        
+        hub.addErrorObserver { error in
+            recorder.record(error.localizedDescription)
+        }
+        
+        let testError = NSError(domain: "EchoAudio", code: 99, userInfo: [NSLocalizedDescriptionKey: "Audio stream stalled"])
+        hub.broadcastError(testError)
+        
+        #expect(recorder.snapshot == ["Audio stream stalled"])
+        #expect(hub.lastError?.localizedDescription == "Audio stream stalled")
+    }
 }

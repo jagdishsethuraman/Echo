@@ -1,6 +1,7 @@
 import SwiftUI
 
-public final class WordMemoryState: ObservableObject, @unchecked Sendable {
+@MainActor
+public final class WordMemoryState: ObservableObject {
     public static let shared = WordMemoryState()
     
     @Published public var isVisible: Bool = false

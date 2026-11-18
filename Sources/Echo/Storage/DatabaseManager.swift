@@ -7,6 +7,7 @@ public final class DatabaseManager: @unchecked Sendable {
     private var db: OpaquePointer?
     private let lock = NSLock()
     private let dbPath: String
+    private let dbQueue = DispatchQueue(label: "com.echo.database", qos: .utility)
     
     /// SQLite treats a NULL destructor as `SQLITE_STATIC`: it keeps the pointer
     /// passed to `sqlite3_bind_text` after the call returns. Swift `String` and
@@ -33,7 +34,7 @@ public final class DatabaseManager: @unchecked Sendable {
         }
         
         openDatabase()
-        createTables()
+        applyMigrations()
     }
     
     deinit {
@@ -46,14 +47,24 @@ public final class DatabaseManager: @unchecked Sendable {
     
     // MARK: - Lifecycle & Initialization
     
+    private func configurePragmas(on db: OpaquePointer?) {
+        guard let db else { return }
+        // WAL mode for high concurrency & performance
+        sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
+        // 3-second busy timeout to prevent lock contention
+        sqlite3_busy_timeout(db, 3000)
+        sqlite3_exec(db, "PRAGMA busy_timeout = 3000;", nil, nil, nil)
+        // Enforce foreign key constraints
+        sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nil, nil, nil)
+    }
+    
     private func openDatabase() {
         lock.lock()
         defer { lock.unlock() }
         
         if sqlite3_open(dbPath, &db) == SQLITE_OK {
-            // Enable WAL mode for high concurrency & performance
-            sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
-            sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
+            configurePragmas(on: db)
             return
         }
         
@@ -74,8 +85,7 @@ public final class DatabaseManager: @unchecked Sendable {
         let fallbackPath = fallbackDirectory.appendingPathComponent("echo.sqlite").path
         
         if sqlite3_open(fallbackPath, &db) == SQLITE_OK {
-            sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
-            sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
+            configurePragmas(on: db)
             print("Echo DatabaseManager: Initialized at fallback: \(fallbackPath)")
         } else {
             if let db = db {
@@ -84,8 +94,7 @@ public final class DatabaseManager: @unchecked Sendable {
             }
             let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("echo.sqlite").path
             if sqlite3_open(tempPath, &db) == SQLITE_OK {
-                sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
-                sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
+                configurePragmas(on: db)
                 print("Echo DatabaseManager: Initialized at temp fallback: \(tempPath)")
             } else {
                 print("Echo DatabaseManager: Failed to open SQLite DB at \(dbPath) or \(fallbackPath)")
@@ -93,49 +102,75 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
     
-    private func createTables() {
+    public func userVersion() -> Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return userVersionLocked()
+    }
+    
+    private func userVersionLocked() -> Int32 {
+        var stmt: OpaquePointer?
+        var version: Int32 = 0
+        if sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK {
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                version = sqlite3_column_int(stmt, 0)
+            }
+        }
+        sqlite3_finalize(stmt)
+        return version
+    }
+    
+    private func setUserVersionLocked(_ version: Int32) {
+        sqlite3_exec(db, "PRAGMA user_version = \(version);", nil, nil, nil)
+    }
+    
+    private func applyMigrations() {
         lock.lock()
         defer { lock.unlock() }
         
-        let schemaSQL = """
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            start_time REAL NOT NULL,
-            end_time REAL,
-            summary_markdown TEXT,
-            created_at REAL NOT NULL
-        );
-        
-        CREATE TABLE IF NOT EXISTS utterances (
-            id TEXT PRIMARY KEY,
-            session_id TEXT,
-            speaker TEXT NOT NULL,
-            timestamp REAL NOT NULL,
-            text TEXT NOT NULL,
-            duration_seconds REAL NOT NULL,
-            is_dictation INTEGER NOT NULL DEFAULT 0
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_utterances_session ON utterances(session_id);
-        CREATE INDEX IF NOT EXISTS idx_utterances_timestamp ON utterances(timestamp);
-        
-        CREATE TABLE IF NOT EXISTS dictionary (
-            id TEXT PRIMARY KEY,
-            raw_pattern TEXT NOT NULL UNIQUE,
-            preferred_replacement TEXT NOT NULL,
-            frequency INTEGER NOT NULL DEFAULT 1,
-            case_sensitive INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
-        
-        CREATE INDEX IF NOT EXISTS idx_dictionary_pattern ON dictionary(raw_pattern);
-        """
-        
-        if sqlite3_exec(db, schemaSQL, nil, nil, nil) != SQLITE_OK {
-            let errMsg = String(cString: sqlite3_errmsg(db))
-            print("Echo DatabaseManager: Table creation error: \(errMsg)")
+        let version = userVersionLocked()
+        if version < 1 {
+            let schemaSQL = """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                start_time REAL NOT NULL,
+                end_time REAL,
+                summary_markdown TEXT,
+                created_at REAL NOT NULL
+            );
+            
+            CREATE TABLE IF NOT EXISTS utterances (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                speaker TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                text TEXT NOT NULL,
+                duration_seconds REAL NOT NULL,
+                is_dictation INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            
+            CREATE INDEX IF NOT EXISTS idx_utterances_session ON utterances(session_id);
+            CREATE INDEX IF NOT EXISTS idx_utterances_timestamp ON utterances(timestamp);
+            
+            CREATE TABLE IF NOT EXISTS dictionary (
+                id TEXT PRIMARY KEY,
+                raw_pattern TEXT NOT NULL UNIQUE,
+                preferred_replacement TEXT NOT NULL,
+                frequency INTEGER NOT NULL DEFAULT 1,
+                case_sensitive INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            """
+            
+            if sqlite3_exec(db, schemaSQL, nil, nil, nil) != SQLITE_OK {
+                let errMsg = String(cString: sqlite3_errmsg(db))
+                print("Echo DatabaseManager: Table creation/migration error (v1): \(errMsg)")
+            } else {
+                setUserVersionLocked(1)
+            }
         }
     }
     
@@ -170,7 +205,9 @@ public final class DatabaseManager: @unchecked Sendable {
             
             sqlite3_bind_double(stmt, 6, Date().timeIntervalSince1970)
             
-            _ = sqlite3_step(stmt)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                print("Echo DatabaseManager: saveSession error: \(String(cString: sqlite3_errmsg(db)))")
+            }
         }
         sqlite3_finalize(stmt)
     }
@@ -198,9 +235,66 @@ public final class DatabaseManager: @unchecked Sendable {
             sqlite3_bind_double(stmt, 6, segment.durationSeconds)
             sqlite3_bind_int(stmt, 7, isDictation ? 1 : 0)
             
-            _ = sqlite3_step(stmt)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                print("Echo DatabaseManager: saveUtterance error: \(String(cString: sqlite3_errmsg(db)))")
+            }
         }
         sqlite3_finalize(stmt)
+    }
+    
+    public func deleteSession(id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let sql = "DELETE FROM sessions WHERE id = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, id.uuidString)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                print("Echo DatabaseManager: deleteSession error: \(String(cString: sqlite3_errmsg(db)))")
+            }
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    public func checkpointWAL() {
+        lock.lock()
+        defer { lock.unlock() }
+        var logSize: Int32 = 0
+        var framesCheckpointed: Int32 = 0
+        let rc = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_PASSIVE, &logSize, &framesCheckpointed)
+        if rc != SQLITE_OK {
+            print("Echo DatabaseManager: WAL checkpoint error: \(String(cString: sqlite3_errmsg(db)))")
+        }
+    }
+    
+    // MARK: - Asynchronous Background Wrappers
+    
+    public func saveSessionAsync(_ session: MeetingSession) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.saveSession(session)
+                continuation.resume()
+            }
+        }
+    }
+    
+    public func saveUtteranceAsync(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.saveUtterance(segment, sessionId: sessionId, isDictation: isDictation)
+                continuation.resume()
+            }
+        }
+    }
+    
+    public func fetchRecentSessionsAsync(limit: Int = 20) async -> [MeetingSession] {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                let sessions = self.fetchRecentSessions(limit: limit)
+                continuation.resume(returning: sessions)
+            }
+        }
     }
     
     public func fetchRecentSessions(limit: Int = 20) -> [MeetingSession] {

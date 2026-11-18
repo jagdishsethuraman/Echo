@@ -6,9 +6,26 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
     private var stream: SCStream?
     private var isCapturing = false
     private let stateQueue = DispatchQueue(label: "com.echo.systemaudio.state")
+    private let callbackLock = NSLock()
     
-    public var onSystemAudioBuffer: ((CMSampleBuffer) -> Void)?
-    public var onSystemVolumeLevel: ((Float) -> Void)?
+    private var _onSystemAudioBuffer: ((CMSampleBuffer) -> Void)?
+    private var _onSystemVolumeLevel: ((Float) -> Void)?
+    private var _onCaptureFailed: ((Error) -> Void)?
+    
+    public var onSystemAudioBuffer: ((CMSampleBuffer) -> Void)? {
+        get { callbackLock.withLock { _onSystemAudioBuffer } }
+        set { callbackLock.withLock { _onSystemAudioBuffer = newValue } }
+    }
+    
+    public var onSystemVolumeLevel: ((Float) -> Void)? {
+        get { callbackLock.withLock { _onSystemVolumeLevel } }
+        set { callbackLock.withLock { _onSystemVolumeLevel = newValue } }
+    }
+    
+    public var onCaptureFailed: ((Error) -> Void)? {
+        get { callbackLock.withLock { _onCaptureFailed } }
+        set { callbackLock.withLock { _onCaptureFailed = newValue } }
+    }
     
     public override init() {
         super.init()
@@ -76,23 +93,12 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
         
         onSystemAudioBuffer?(sampleBuffer)
         
-        // Approximate VU energy from audio sample buffer
-        if let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
-            let length = CMBlockBufferGetDataLength(blockBuffer)
-            if length > 0 {
-                var dataPointer: UnsafeMutablePointer<Int8>?
-                if CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: nil, dataPointerOut: &dataPointer) == noErr,
-                   let pointer = dataPointer {
-                    let samples = pointer.withMemoryRebound(to: Int16.self, capacity: length / 2) { $0 }
-                    let count = length / 2
-                    var sum: Float = 0
-                    for i in 0..<min(count, 512) {
-                        let f = Float(samples[i]) / 32768.0
-                        sum += f * f
-                    }
-                    let rms = sqrt(sum / Float(min(count, 512)))
-                    onSystemVolumeLevel?(min(1.0, rms * 4.0))
-                }
+        // Compute VU energy accurately via canonical PCM conversion rather than
+        // assuming raw Int16 samples from ScreenCaptureKit (which can be Float32).
+        if onSystemVolumeLevel != nil {
+            if let converted = AudioBufferConverter.pcmBuffer(from: sampleBuffer) {
+                let level = AudioBufferConverter.calculateRMS(from: converted)
+                onSystemVolumeLevel?(level)
             }
         }
     }
@@ -101,5 +107,7 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
         stateQueue.sync {
             self.isCapturing = false
         }
+        onSystemVolumeLevel?(0.0)
+        onCaptureFailed?(error)
     }
 }

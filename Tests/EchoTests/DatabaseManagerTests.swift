@@ -198,4 +198,50 @@ struct DatabaseManagerTests {
         db.deleteDictionaryEntry(id: entry.id)
         #expect(db.fetchDictionaryEntries().isEmpty)
     }
+    
+    @Test func schemaVersionIsTracked() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+        
+        #expect(db.userVersion() >= 1)
+    }
+    
+    @Test func deleteSessionCascadesToUtterances() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+        
+        let session = MeetingSession(title: "Cascading Test")
+        db.saveSession(session)
+        
+        let seg1 = TranscriptSegment(speaker: .you, text: "line 1", durationSeconds: 1.0)
+        let seg2 = TranscriptSegment(speaker: .meeting, text: "line 2", durationSeconds: 1.5)
+        db.saveUtterance(seg1, sessionId: session.id)
+        db.saveUtterance(seg2, sessionId: session.id)
+        
+        #expect(db.fetchUtterances(sessionId: session.id).count == 2)
+        
+        // Deleting the session must cascade and delete all associated utterances
+        db.deleteSession(id: session.id)
+        
+        #expect(db.fetchRecentSessions().filter { $0.id == session.id }.isEmpty)
+        #expect(db.fetchUtterances(sessionId: session.id).isEmpty)
+    }
+    
+    @Test func asyncOperationsPersistData() async {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+        
+        let session = MeetingSession(title: "Async Session")
+        await db.saveSessionAsync(session)
+        
+        let seg = TranscriptSegment(speaker: .you, text: "async utterance", durationSeconds: 2.0)
+        await db.saveUtteranceAsync(seg, sessionId: session.id)
+        
+        let sessions = await db.fetchRecentSessionsAsync()
+        #expect(sessions.contains { $0.id == session.id })
+        
+        let utterances = db.fetchUtterances(sessionId: session.id)
+        #expect(utterances.count == 1)
+        #expect(utterances.first?.text == "async utterance")
+    }
 }

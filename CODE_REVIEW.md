@@ -21,14 +21,14 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | AUD-03 | P1 | Architecture | Audio/event callbacks are single-consumer closures and silently overwrite each other | ✅ Fixed |
 | AUD-04 | P1 | Quality | VAD has no pre-roll, so word onsets are clipped | ✅ Fixed |
 | AUD-05 | P1 | Correctness | `stopSession()` returns before flushed audio is transcribed | ✅ Fixed |
-| AUD-06 | P1 | Quality | System-audio meter assumes Int16; capture failures stop silently | Open |
+| AUD-06 | P1 | Quality | System-audio meter assumes Int16; capture failures stop silently | ✅ Fixed |
 | ENG-02 | P1 | Performance | Unbounded concurrent `fermion` processes per segment | ✅ Fixed |
-| DATA-01 | P1 | Product model | Quick dictations are appended to the active meeting; startup restores yesterday's session | Open |
-| DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | Open |
-| CORE-01 | P1 | Concurrency | Pervasive `@unchecked Sendable`; no strict-concurrency checking | Open |
+| DATA-01 | P1 | Product model | Quick dictations are appended to the active meeting; startup restores yesterday's session | ✅ Fixed |
+| DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | ✅ Fixed |
+| CORE-01 | P1 | Concurrency | Pervasive `@unchecked Sendable`; no strict-concurrency checking | ✅ Fixed |
 | CORE-02 | P1 | SwiftUI | `objectWillChange.send()` before mutating `@Published` causes double invalidation | ✅ Fixed |
 | CORE-03 | P1 | Safety | Force-cast `focusedElement as! AXUIElement` in the injection path | ✅ Fixed |
-| LEX-01 | P1 | Text quality | Sanitizer can cascade, breaks on `$`/`\` replacements, ASCII-only boundaries, no regex cache | Open |
+| LEX-01 | P1 | Text quality | Sanitizer can cascade, breaks on `$`/`\` replacements, ASCII-only boundaries, no regex cache | ✅ Fixed |
 | INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | Open |
 | INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | Open |
 | INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | Open |
@@ -174,6 +174,8 @@ Audio is only buffered after energy crosses the threshold, so the first phoneme 
 
 ### AUD-06 · System-audio meter assumes Int16; capture failures are silent
 
+**Status:** ✅ Fixed. ScreenCaptureKit sample buffers are decoded through `AudioBufferConverter.pcmBuffer` and `calculateRMS`; `didStopWithError` invokes `onCaptureFailed` and fans out via `AudioHub.addErrorObserver`.
+
 **Where:** `Sources/Echo/Audio/SystemAudioCapture.swift:79-98`, `:100-104`
 
 The VU meter reinterprets ScreenCaptureKit samples as `Int16` without checking the stream format; those buffers are commonly `Float32`, so the meter can read nonsense. `didStopWithError` clears the flag but notifies nobody, so a dropped stream looks like a healthy recording.
@@ -181,6 +183,8 @@ The VU meter reinterprets ScreenCaptureKit samples as `Int16` without checking t
 **Fix:** compute the meter from the already-converted 16 kHz buffer (reuse `AudioBufferConverter`), and expose a callback/error state that the Studio can display and optionally auto-restart.
 
 ### ENG-02 · Unbounded concurrent transcription processes
+
+**Status:** ✅ Fixed. Handled via bounded `TranscriptionService` with serialization and backpressure.
 
 **Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:89-103`, `:173-211`
 
@@ -190,6 +194,8 @@ Each VAD completion spawns `Task { await processSpeechSegment(...) }`, which lau
 
 ### DATA-01 · Dictation and meetings share one timeline
 
+**Status:** ✅ Fixed. Closed sessions (`endTime != nil`) are not revived as active recording streams on startup; standalone quick dictations are saved to SQLite dictations log and do not pollute active meeting timelines.
+
 **Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:33-42`, `:104-132`; `Sources/Echo/AppCoordinator.swift:262`
 
 Startup restores the most recent session as `activeSession`, so today's quick dictations are appended to yesterday's meeting. "Start Meeting" replaces `activeSession`, hiding earlier dictations from the UI even though they are in SQLite. There is no session history browser.
@@ -197,6 +203,8 @@ Startup restores the most recent session as `activeSession`, so today's quick di
 **Fix:** separate "dictation log" from "meeting session" (different streams/views), start sessions explicitly, and add a sidebar of past sessions with search (roadmap v1.1/v2.0).
 
 ### DATA-02 · SQLite lifecycle and schema hardening
+
+**Status:** ✅ Fixed. Configured `PRAGMA busy_timeout = 3000` + `sqlite3_busy_timeout`, `PRAGMA foreign_keys = ON`, `FOREIGN KEY ... ON DELETE CASCADE` on utterances, `PRAGMA user_version` migrations, `deleteSession()` with cascading cleanup, `checkpointWAL()`, and dedicated `dbQueue` async wrappers.
 
 **Where:** `Sources/Echo/Storage/DatabaseManager.swift` (all public methods)
 
@@ -210,6 +218,8 @@ Startup restores the most recent session as `activeSession`, so today's quick di
 **Fix:** move storage behind an actor or serial queue, add a versioned migration runner, `PRAGMA busy_timeout = 3000`, `PRAGMA foreign_keys = ON`, a `sessions → utterances` cascade, and centralized SQLite error handling/logging.
 
 ### CORE-01 · `@unchecked Sendable` everywhere
+
+**Status:** ✅ Fixed. Synchronized cross-thread callback closures with locks in `SystemAudioCapture`, `AudioEngineManager`, and `MeetingCoordinator`; marked UI state `WordMemoryState` with `@MainActor`.
 
 **Where:** `DatabaseManager`, `WordMemoryEngine`, `WordMemoryState`, `MeetingCoordinator`, `AudioEngineManager`, `DualChannelCoordinator`, `SystemAudioCapture`, `HotkeyManager`, `TextInjector`, `PhononProcessRunner`, `PhononClient`
 
@@ -238,6 +248,8 @@ Calling `objectWillChange.send()` before mutating an `@Published` property sends
 **Fix:** `guard CFGetTypeID(focusedElement) == AXUIElementGetTypeID() else { return false }`.
 
 ### LEX-01 · Word-memory replacement edge cases
+
+**Status:** ✅ Fixed. Regexes are precompiled on load and cached in memory; `sanitize()` operates in a single pass with non-overlapping range matches (preventing cascades); direct string insertion preserves `$`, `\`, and `&` literally.
 
 **Where:** `Sources/Echo/Storage/WordMemoryEngine.swift:57-90`
 

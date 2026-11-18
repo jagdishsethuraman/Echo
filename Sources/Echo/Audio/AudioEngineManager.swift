@@ -7,9 +7,20 @@ public final class AudioEngineManager: @unchecked Sendable {
     
     private var converter: AVAudioConverter?
     private var converterSourceFormat: AVAudioFormat?
+    private let callbackLock = NSLock()
     
-    public var onAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
-    public var onVolumeLevel: ((Float) -> Void)?
+    private var _onAudioBuffer: ((AVAudioPCMBuffer) -> Void)?
+    private var _onVolumeLevel: ((Float) -> Void)?
+    
+    public var onAudioBuffer: ((AVAudioPCMBuffer) -> Void)? {
+        get { callbackLock.withLock { _onAudioBuffer } }
+        set { callbackLock.withLock { _onAudioBuffer = newValue } }
+    }
+    
+    public var onVolumeLevel: ((Float) -> Void)? {
+        get { callbackLock.withLock { _onVolumeLevel } }
+        set { callbackLock.withLock { _onVolumeLevel = newValue } }
+    }
     
     public init() {}
     

@@ -94,4 +94,27 @@ struct WordMemoryEngineTests {
         #expect(engine.sanitize("quasar") == "quasar")
         #expect(!engine.allEntries().contains { $0.rawPattern == "quasar" })
     }
+    
+    @Test func doesNotCascadeSequentialReplacements() {
+        let (engine, directory) = makeEngine()
+        defer { remove(directory) }
+        
+        // Rule A turns "apple" into "banana", Rule B turns "banana" into "cherry"
+        engine.remember(raw: "apple", preferred: "banana")
+        engine.remember(raw: "banana", preferred: "cherry")
+        
+        // Under single-pass non-overlapping matching, "apple" becomes "banana", NOT "cherry"
+        #expect(engine.sanitize("I like apple and banana") == "I like banana and cherry")
+    }
+    
+    @Test func preservesDollarAndBackslashTemplates() {
+        let (engine, directory) = makeEngine()
+        defer { remove(directory) }
+        
+        engine.remember(raw: "price", preferred: "$500")
+        engine.remember(raw: "winpath", preferred: "C:\\Users\\Echo")
+        
+        #expect(engine.sanitize("the price is fixed") == "the $500 is fixed")
+        #expect(engine.sanitize("go to winpath now") == "go to C:\\Users\\Echo now")
+    }
 }

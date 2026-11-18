@@ -90,6 +90,35 @@ struct MeetingCoordinatorTests {
         #expect(coordinator.activeSession?.segments.first?.text == "persisted line")
     }
     
+    @Test @MainActor func doesNotRestoreClosedSessionFromDatabase() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo-meeting-closed-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { remove(directory) }
+        
+        let database = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
+        let closedMeeting = MeetingSession(
+            title: "Yesterday's Meeting",
+            startTime: Date(timeIntervalSince1970: 1_700_000_000),
+            endTime: Date(timeIntervalSince1970: 1_700_003_600)
+        )
+        database.saveSession(closedMeeting)
+        database.saveUtterance(
+            TranscriptSegment(speaker: .meeting, text: "closed meeting line", durationSeconds: 5),
+            sessionId: closedMeeting.id
+        )
+        
+        let coordinator = MeetingCoordinator(
+            phononRunner: PhononProcessRunner(fermionPath: "/usr/bin/true"),
+            database: database
+        )
+        
+        // Yesterday's closed session must NOT be revived as the active session
+        #expect(coordinator.activeSession?.id != closedMeeting.id)
+        #expect(coordinator.activeSession?.title == "Echo Speech Stream")
+        #expect(coordinator.activeSession?.segments.isEmpty == true)
+    }
+    
     @Test @MainActor func sessionUpdateCallbackReceivesAppendedSegment() {
         let (coordinator, _, directory) = makeCoordinator()
         defer { remove(directory) }

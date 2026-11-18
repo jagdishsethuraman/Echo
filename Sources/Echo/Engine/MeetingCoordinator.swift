@@ -13,7 +13,13 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     @Published public var micLevel: Float = 0.0
     @Published public var systemLevel: Float = 0.0
     
-    public var onSessionUpdated: ((MeetingSession) -> Void)?
+    private let callbackLock = NSLock()
+    private var _onSessionUpdated: ((MeetingSession) -> Void)?
+    
+    public var onSessionUpdated: ((MeetingSession) -> Void)? {
+        get { callbackLock.withLock { _onSessionUpdated } }
+        set { callbackLock.withLock { _onSessionUpdated = newValue } }
+    }
     
     private let sessionQueue = DispatchQueue(label: "com.echo.meeting.session")
     
@@ -39,7 +45,9 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         self.systemVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         
         // Restore recent session and past utterances from local SQLite database
-        if var lastSession = database.fetchRecentSessions(limit: 1).first {
+        // ONLY if the session was actively open (endTime == nil). Closed
+        // sessions from past meetings should not be revived as the active recording stream.
+        if var lastSession = database.fetchRecentSessions(limit: 1).first, lastSession.endTime == nil {
             lastSession.segments = database.fetchUtterances(sessionId: lastSession.id)
             self.activeSession = lastSession
         } else {

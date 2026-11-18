@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Developer tooling:** Debug builds accept `Echo --snapshot <directory>` to render PNGs of the studio and HUD, and Xcode `#Preview`s cover both surfaces for design iteration.
 
 ### Fixed
+- **System-audio VU meter & capture error notifications (`AUD-06`):** ScreenCaptureKit sample buffers are now decoded to canonical 16 kHz Float32 PCM using `AudioBufferConverter.pcmBuffer` and `calculateRMS` rather than assuming raw Int16. Capture errors trigger `onCaptureFailed` and fan out through `AudioHub.addErrorObserver`.
+- **Word-memory regex caching & cascade elimination (`LEX-01`):** Vocabulary patterns are precompiled on database load and cached in memory. Replacements use single-pass non-overlapping range matches to prevent cascading replacements and insert text directly to preserve `$`, `\`, and `&` without regex template corruption.
+- **SQLite schema hardening & lifecycle management (`DATA-02`):** Configured 3-second busy timeout (`PRAGMA busy_timeout = 3000; sqlite3_busy_timeout`), enforced foreign key constraints (`PRAGMA foreign_keys = ON`), added `ON DELETE CASCADE` from utterances to sessions, implemented `user_version` schema migration tracking, added `deleteSession()`, WAL checkpointing, and background `dbQueue` async methods.
+- **Product model separation & session restore (`DATA-01`):** Startup no longer resurrects closed sessions (`endTime != nil`) as active recording streams. Quick dictations while not in a meeting are preserved in the standalone SQLite dictations log rather than polluting meeting sessions.
+- **Concurrency hardening (`CORE-01`):** Added lock-synchronized callback closures in `SystemAudioCapture`, `AudioEngineManager`, and `MeetingCoordinator` to prevent cross-queue races; marked `WordMemoryState` with `@MainActor`.
 - **Safe SQLite database fallback:** Added graceful `NSTemporaryDirectory()` fallback in `DatabaseManager` ensuring tables are created and operations proceed even under restricted sandbox permissions.
 - **Accessibility injection safety:** Guarded `focusedElement` with `CFGetTypeID` against unexpected CFTypes before casting to `AXUIElement` (`CORE-03`).
 - **Eliminated double SwiftUI invalidation:** Removed redundant manual `objectWillChange.send()` calls when mutating `@Published` properties (`CORE-02`).
