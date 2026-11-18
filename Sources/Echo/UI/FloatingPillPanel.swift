@@ -5,12 +5,13 @@ public final class FloatingPillPanel: NSPanel {
     private let stateModel: PillStateObservable
     private var dismissTimer: Timer?
     public var onStopRequested: (() -> Void)?
-    private var lastTargetWidth: CGFloat = 360
+    public var onCancelRequested: (() -> Void)?
+    private var lastTargetWidth: CGFloat = 370
     
     public init() {
         self.stateModel = PillStateObservable()
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 52),
+            contentRect: NSRect(x: 0, y: 0, width: 370, height: 52),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -25,9 +26,11 @@ public final class FloatingPillPanel: NSPanel {
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         self.isMovableByWindowBackground = false
         
-        let container = FloatingPillContainer(stateModel: stateModel) { [weak self] in
-            self?.onStopRequested?()
-        }
+        let container = FloatingPillContainer(
+            stateModel: stateModel,
+            onStop: { [weak self] in self?.onStopRequested?() },
+            onCancel: { [weak self] in self?.onCancelRequested?() }
+        )
         let hostingView = NSHostingView(rootView: container)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -68,11 +71,11 @@ public final class FloatingPillPanel: NSPanel {
         let needsReposition: Bool
         switch (oldState, state) {
         case (.listening(_, _, let oldLocked, _), .listening(_, _, let newLocked, _)):
-            let oldW = targetWidth(for: oldState)
-            let newW = targetWidth(for: state)
-            needsReposition = oldLocked != newLocked || abs(oldW - newW) >= 24
-        default:
+            needsReposition = (oldLocked != newLocked) || (abs(targetWidth(for: oldState) - targetWidth(for: state)) > 20)
+        case (.idle, .listening), (.listening, .transcribing), (.transcribing, .success), (.transcribing, .error):
             needsReposition = true
+        default:
+            needsReposition = abs(targetWidth(for: oldState) - targetWidth(for: state)) > 20
         }
         
         if needsReposition {
@@ -111,14 +114,14 @@ public final class FloatingPillPanel: NSPanel {
         case .idle:
             return 240
         case .listening(_, let livePartial, let isLocked, _):
-            let baseWidth: CGFloat = isLocked ? 380 : 340
+            let baseWidth: CGFloat = isLocked ? 410 : 370
             if livePartial.isEmpty {
                 return baseWidth
             } else {
                 // Quantize text width in 40pt buckets to avoid flutter on every letter
                 let rawWidth = baseWidth + CGFloat(livePartial.count) * 7.0
                 let quantized = ceil(rawWidth / 40.0) * 40.0
-                return min(620, max(baseWidth, quantized))
+                return min(640, max(baseWidth, quantized))
             }
         case .transcribing:
             return 280
@@ -131,14 +134,23 @@ public final class FloatingPillPanel: NSPanel {
         }
     }
     
+    /// Target screen: chooses the monitor containing the mouse pointer, falling back to main display (UX-03)
+    private var targetScreen: NSScreen? {
+        let mouseLoc = NSEvent.mouseLocation
+        if let screenUnderMouse = NSScreen.screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) }) {
+            return screenUnderMouse
+        }
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+    
     private func reposition(for state: PillState, animate: Bool = true) {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = targetScreen else { return }
         
         let screenRect = screen.visibleFrame
         let panelW: CGFloat = targetWidth(for: state)
         let panelH: CGFloat = 52
         
-        // Bottom-Center screen positioning: keep the 38pt pill 30px above the Dock
+        // Bottom-Center screen positioning: keep the 38pt pill 24px above the Dock/bottom edge
         let x = round(screenRect.midX - (panelW / 2))
         let y = round(screenRect.minY + 24)
         let targetFrame = NSRect(x: x, y: y, width: panelW, height: panelH)
@@ -172,13 +184,15 @@ public final class PillStateObservable: ObservableObject {
 public struct FloatingPillContainer: View {
     @ObservedObject var stateModel: PillStateObservable
     var onStop: (() -> Void)?
+    var onCancel: (() -> Void)?
     
-    public init(stateModel: PillStateObservable, onStop: (() -> Void)? = nil) {
+    public init(stateModel: PillStateObservable, onStop: (() -> Void)? = nil, onCancel: (() -> Void)? = nil) {
         self.stateModel = stateModel
         self.onStop = onStop
+        self.onCancel = onCancel
     }
     
     public var body: some View {
-        FloatingPillView(state: stateModel.state, onStop: onStop)
+        FloatingPillView(state: stateModel.state, onStop: onStop, onCancel: onCancel)
     }
 }

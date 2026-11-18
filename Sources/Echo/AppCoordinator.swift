@@ -75,6 +75,12 @@ public final class AppCoordinator: ObservableObject {
                 await self?.finishDictation()
             }
         }
+        
+        floatingPill.onCancelRequested = { [weak self] in
+            Task { @MainActor in
+                self?.cancelDictation()
+            }
+        }
     }
     
     private func setupHotkeyWiring() {
@@ -87,6 +93,12 @@ public final class AppCoordinator: ObservableObject {
         hotkeyManager.onKeyUp = { [weak self] in
             Task { @MainActor in
                 await self?.finishDictation()
+            }
+        }
+        
+        hotkeyManager.onCancel = { [weak self] in
+            Task { @MainActor in
+                self?.cancelDictation()
             }
         }
         
@@ -332,6 +344,29 @@ public final class AppCoordinator: ObservableObject {
             statusMessage = "Transcription failed"
         }
         
+        MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
+    }
+    
+    public func cancelDictation() {
+        guard isDictating else { return }
+        isDictating = false
+        dictationCaptureActive.set(false)
+        partialTimer?.invalidate()
+        partialTimer = nil
+        durationTimer?.invalidate()
+        durationTimer = nil
+        dictationStartTime = nil
+        isTranscribingPartial = false
+        
+        audioHub.releaseMicrophone()
+        hotkeyManager.unlock()
+        
+        dictationBuffer.removeAll()
+        lastPartialByteCount = 0
+        currentLivePartial = ""
+        
+        floatingPill.hide()
+        statusMessage = "Dictation Cancelled"
         MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
     }
     

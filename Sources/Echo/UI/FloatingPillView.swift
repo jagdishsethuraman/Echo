@@ -11,10 +11,12 @@ public enum PillState: Equatable, Sendable {
 public struct FloatingPillView: View {
     public let state: PillState
     public var onStop: (() -> Void)?
+    public var onCancel: (() -> Void)?
 
-    public init(state: PillState, onStop: (() -> Void)? = nil) {
+    public init(state: PillState, onStop: (() -> Void)? = nil, onCancel: (() -> Void)? = nil) {
         self.state = state
         self.onStop = onStop
+        self.onCancel = onCancel
     }
 
     private func formatDuration(_ seconds: Int) -> String {
@@ -69,8 +71,8 @@ public struct FloatingPillView: View {
                 }
 
                 if livePartial.isEmpty {
-                    Text(isLocked ? "Hands-free · tap ⌃ to finish" : "Listening — hold ⌃ to talk")
-                        .font(.system(size: 12, weight: .medium))
+                    Text(isLocked ? "Hands-free · tap ⌃ or Stop · Esc to cancel" : "Listening — hold ⌃ to talk · Esc to cancel")
+                        .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(EchoTheme.textSecondary)
                         .lineLimit(1)
                 } else {
@@ -89,22 +91,37 @@ public struct FloatingPillView: View {
 
                 Spacer(minLength: 4)
 
-                Button {
-                    onStop?()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 7, weight: .bold))
-                        Text("Stop")
-                            .font(.system(size: 10.5, weight: .semibold))
+                HStack(spacing: 6) {
+                    Button {
+                        onCancel?()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(EchoTheme.textSecondary)
+                            .frame(width: 20, height: 20)
+                            .background(Circle().fill(EchoTheme.controlBackground))
                     }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4.5)
-                    .background(Capsule().fill(EchoTheme.recordingRed))
-                    .shadow(color: EchoTheme.recordingRed.opacity(0.3), radius: 3, y: 1)
+                    .buttonStyle(PlainButtonStyle())
+                    .help("Discard recording (Esc)")
+
+                    Button {
+                        onStop?()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 7, weight: .bold))
+                            Text("Stop")
+                                .font(.system(size: 10.5, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4.5)
+                        .background(Capsule().fill(EchoTheme.recordingRed))
+                        .shadow(color: EchoTheme.recordingRed.opacity(0.3), radius: 3, y: 1)
+                    }
+                    .buttonStyle(AtelierButtonStyle())
+                    .help("Finish & transcribe (⌃)")
                 }
-                .buttonStyle(AtelierButtonStyle())
 
             case .transcribing:
                 ProgressView()

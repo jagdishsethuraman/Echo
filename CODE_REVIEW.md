@@ -29,13 +29,13 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | CORE-02 | P1 | SwiftUI | `objectWillChange.send()` before mutating `@Published` causes double invalidation | ✅ Fixed |
 | CORE-03 | P1 | Safety | Force-cast `focusedElement as! AXUIElement` in the injection path | ✅ Fixed |
 | LEX-01 | P1 | Text quality | Sanitizer can cascade, breaks on `$`/`\` replacements, ASCII-only boundaries, no regex cache | ✅ Fixed |
-| INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | Open |
+| INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | ✅ Fixed |
 | INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | Open |
 | INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | Open |
 | INJ-04 | P2 | UX | No feedback when microphone or system-audio capture fails; `statusMessage` is never rendered | Open |
 | UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | Open |
 | UX-02 | P2 | Performance | Entire Studio view invalidates at audio rate (~43 Hz) | Open |
-| UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | Open |
+| UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | ✅ Fixed |
 | UX-04 | P2 | Lifecycle | No graceful shutdown: audio not stopped, session `endTime` not written, temp files left behind | Open |
 | SEC-01 | P2 | Privacy | Sensitive WAVs are written to world-readable `/tmp` and may survive crashes | Open |
 | UX-05 | P2 | UX | "Export All Notes" exports only the active session | Open |
@@ -266,7 +266,9 @@ Calling `objectWillChange.send()` before mutating an `@Published` property sends
 
 ### INJ-01 · Global Control key is too broad
 
-**Where:** `Sources/Echo/Injection/HotkeyManager.swift:29-115`
+**Status:** ✅ Fixed. Added `Esc` key monitor to cancel dictation, discard audio, and dismiss HUD immediately without injecting. Added chord filter: simultaneous modifiers (Command/Option/Shift) or key presses while Control is held down (e.g. `Ctrl+C`, `Ctrl+Space`) mark session as chorded and abort recording. Added dedicated discard button (✕) to floating pill.
+
+**Where:** `Sources/Echo/Injection/HotkeyManager.swift`, `Sources/Echo/AppCoordinator.swift`
 
 Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, emacs binding, Mission Control chord, etc. starts dictation. A short tap with background noise can inject unexpected text, and there is no way to cancel a mistaken dictation (no Esc handling, no "discard" button).
 
@@ -316,7 +318,9 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### UX-03 · HUD sizing and screen selection
 
-**Where:** `Sources/Echo/UI/FloatingPillPanel.swift:92-137`
+**Status:** ✅ Fixed. Anchored Floating Pill dynamically to display containing the mouse pointer (`NSMouseInRect(mouseLoc, screen.frame)`), falling back to `NSScreen.main`. Expanded base width to house discard button and status hints comfortably.
+
+**Where:** `Sources/Echo/UI/FloatingPillPanel.swift`
 
 Width is estimated as `characterCount × 7.5` (`:102`, `:108`, `:111`), which breaks for wide glyphs, emoji, and CJK. `NSScreen.main` (`:117`) is unreliable for a non-key panel on multi-monitor setups.
 
