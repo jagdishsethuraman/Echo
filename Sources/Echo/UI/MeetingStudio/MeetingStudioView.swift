@@ -30,12 +30,7 @@ public struct MeetingStudioView: View {
     @State private var newActionText: String = ""
     @State private var isAddingActionItem: Bool = false
     @FocusState private var isSearchFocused: Bool
-    @State private var actionItems: [ActionItemState] = [
-        ActionItemState(text: "Benchmark Swift loopback engine", isDone: true),
-        ActionItemState(text: "Build non-activating floating HUD", isDone: true),
-        ActionItemState(text: "Dual-channel loopback & VAD", isDone: false),
-        ActionItemState(text: "Universal clipboard & cursor injection", isDone: false)
-    ]
+    @State private var actionItems: [ActionItemState] = []
 
     public init(
         session: MeetingSession,
@@ -53,6 +48,20 @@ public struct MeetingStudioView: View {
         self.onExportMarkdown = onExportMarkdown
     }
 
+    private var decisions: [String] {
+        MeetingNotesExtractor.extractDecisions(from: session.segments)
+    }
+
+    private func syncActionItems() {
+        let extracted = MeetingNotesExtractor.extractActionItems(from: session.segments)
+        for text in extracted {
+            let lower = text.lowercased()
+            if !actionItems.contains(where: { $0.text.lowercased() == lower }) {
+                actionItems.append(ActionItemState(text: text, isDone: false))
+            }
+        }
+    }
+
     private var filteredSegments: [TranscriptSegment] {
         let trimmed = searchFilter.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return session.segments }
@@ -63,16 +72,11 @@ public struct MeetingStudioView: View {
     }
 
     private func copyExecutiveNotes() {
-        var notes = "## \(session.title) - Notes\n\n"
-        notes += "### Key Decisions\n"
-        notes += "- Single binary unified app (saves 1.2 GB RAM)\n"
-        notes += "- Phonon-2 INT6 locked as primary offline STT\n"
-        notes += "- Every dictation saved to clipboard + studio timeline\n\n"
-        notes += "### Action Items\n"
-        for item in actionItems {
-            let mark = item.isDone ? "[x]" : "[ ]"
-            notes += "- \(mark) \(item.text)\n"
-        }
+        let notes = MeetingNotesExtractor.formatMarkdown(
+            title: session.title,
+            decisions: decisions,
+            actionItems: actionItems
+        )
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -128,6 +132,12 @@ public struct MeetingStudioView: View {
         .background(FrostedBackdrop())
         .preferredColorScheme(.dark)
         .frame(minWidth: 840, minHeight: 560)
+        .onAppear {
+            syncActionItems()
+        }
+        .onChange(of: session.segments) {
+            syncActionItems()
+        }
     }
 
     // MARK: - Toolbar
@@ -469,6 +479,11 @@ public struct MeetingStudioView: View {
                 Text("Key Decisions")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(EchoTheme.textPrimary)
+                if !decisions.isEmpty {
+                    Text("\(decisions.count)")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(EchoTheme.textMuted)
+                }
                 Spacer()
                 Image(systemName: "sparkles")
                     .font(.system(size: 9))
@@ -476,9 +491,17 @@ public struct MeetingStudioView: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                DecisionRow(text: "Single binary unified app (saves 1.2 GB RAM).")
-                DecisionRow(text: "Phonon-2 INT6 locked as primary offline STT.")
-                DecisionRow(text: "Every dictation saved to clipboard + studio timeline.")
+                if decisions.isEmpty {
+                    Text("Decisions and agreements reached during discussion will appear here.")
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textMuted)
+                        .italic()
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach(decisions, id: \.self) { decision in
+                        DecisionRow(text: decision)
+                    }
+                }
             }
         }
         .padding(13)
@@ -495,9 +518,11 @@ public struct MeetingStudioView: View {
                 Text("Action Items")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(EchoTheme.textPrimary)
-                Text("\(actionItems.filter(\.isDone).count)/\(actionItems.count)")
-                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(EchoTheme.textMuted)
+                if !actionItems.isEmpty {
+                    Text("\(actionItems.filter(\.isDone).count)/\(actionItems.count)")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(EchoTheme.textMuted)
+                }
                 Spacer()
 
                 Button {
@@ -515,25 +540,33 @@ public struct MeetingStudioView: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                ForEach($actionItems) { $item in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            item.isDone.toggle()
+                if actionItems.isEmpty && !isAddingActionItem {
+                    Text("Commitments and next steps mentioned aloud will appear here.")
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textMuted)
+                        .italic()
+                        .padding(.vertical, 4)
+                } else {
+                    ForEach($actionItems) { $item in
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                item.isDone.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(item.isDone ? EchoTheme.accent : EchoTheme.textFaint)
+                                Text(item.text)
+                                    .font(EchoFont.body)
+                                    .foregroundStyle(item.isDone ? EchoTheme.textMuted : EchoTheme.textSecondary)
+                                    .strikethrough(item.isDone, color: EchoTheme.textFaint)
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 12))
-                                .foregroundStyle(item.isDone ? EchoTheme.accent : EchoTheme.textFaint)
-                            Text(item.text)
-                                .font(EchoFont.body)
-                                .foregroundStyle(item.isDone ? EchoTheme.textMuted : EchoTheme.textSecondary)
-                                .strikethrough(item.isDone, color: EchoTheme.textFaint)
-                            Spacer(minLength: 0)
-                        }
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
 

@@ -33,7 +33,7 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | Open |
 | INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | Open |
 | INJ-04 | P2 | UX | No feedback when microphone or system-audio capture fails; `statusMessage` is never rendered | Open |
-| UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | Open |
+| UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | ✅ Fixed |
 | UX-02 | P2 | Performance | Entire Studio view invalidates at audio rate (~43 Hz) | Open |
 | UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | ✅ Fixed |
 | UX-04 | P2 | Lifecycle | No graceful shutdown: audio not stopped, session `endTime` not written, temp files left behind | Open |
@@ -302,7 +302,9 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### UX-01 · Hardcoded "AI" notes
 
-**Where:** `Sources/Echo/UI/MeetingStudio/MeetingStudioView.swift:179-206`
+**Status:** ✅ Fixed. Created `MeetingNotesExtractor` with linguistic sentence analysis to extract real decisions and action items dynamically from transcript utterances in real time. Replaced hardcoded strings with live dynamic cards, empty state guidance, and interactive user item management.
+
+**Where:** `Sources/Echo/Engine/MeetingNotesExtractor.swift`, `Sources/Echo/UI/MeetingStudio/MeetingStudioView.swift`
 
 "Key Decisions" and "Action Items" are literal strings, including "Single binary unified app (saves 1.2 GB RAM)". The panel is labelled "LIVE AI EXECUTIVE NOTES".
 
