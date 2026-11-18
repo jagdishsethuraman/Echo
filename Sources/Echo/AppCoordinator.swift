@@ -129,6 +129,38 @@ public final class AppCoordinator: ObservableObject {
             }
         }
         
+        hotkeyManager.onOpenMeetingStudio = { [weak self] in
+            Task { @MainActor in
+                self?.showMeetingStudio()
+            }
+        }
+        
+        hotkeyManager.onToggleDictation = { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if self.isDictating {
+                    await self.finishDictation()
+                } else {
+                    self.startDictation()
+                }
+            }
+        }
+        
+        hotkeyManager.onCopyLastDictation = { [weak self] in
+            Task { @MainActor in
+                guard let self = self, !self.lastTranscript.isEmpty else { return }
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(self.lastTranscript, forType: .string)
+            }
+        }
+        
+        hotkeyManager.onToggleMeetingRecording = { [weak self] in
+            Task { @MainActor in
+                await self?.toggleMeetingSession()
+            }
+        }
+        
         hotkeyManager.startMonitoring()
     }
     
@@ -270,14 +302,12 @@ public final class AppCoordinator: ObservableObject {
         }
     }
     
-    /// Write raw PCM to a temporary WAV file, transcribe it, and clean up.
+    /// Write raw PCM to a secure temporary WAV file (0600 permissions), transcribe it, and clean up.
     private func transcribePCM(_ pcmData: Data) async throws -> String {
         let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
-        let tempFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("echo_audio_\(UUID().uuidString).wav")
+        let tempFile = try AudioTempDirectory.writeTempWAV(data: wavData, prefix: "echo_audio")
         defer { try? FileManager.default.removeItem(at: tempFile) }
         
-        try wavData.write(to: tempFile)
         let (transcript, _) = try await phononRunner.transcribe(fileURL: tempFile)
         return transcript
     }
@@ -467,6 +497,32 @@ public final class AppCoordinator: ObservableObject {
         alert.runModal()
     }
     
+    /// Graceful shutdown on app termination: stops active recording, finalizes open meeting session,
+    /// flushes SQLite WAL, terminates all audio engines, and sweeps temporary audio files.
+    public func shutdownGracefully() {
+        print("[Echo] Initiating graceful application shutdown...")
+        if isDictating {
+            cancelDictation()
+        }
+        
+        if isMeetingActive {
+            isMeetingActive = false
+            Task {
+                await meetingCoordinator.dualChannel.stopMeetingCapture()
+            }
+        }
+        
+        if var session = meetingCoordinator.activeSession, session.endTime == nil {
+            session.endTime = Date()
+            DatabaseManager.shared.saveSession(session)
+        }
+        
+        audioHub.stopAll()
+        DatabaseManager.shared.checkpointWAL()
+        AudioTempDirectory.sweepOrphanedAudioFiles()
+        print("[Echo] Graceful shutdown completed.")
+    }
+
     public func openAccessibilitySettings() {
         // Trigger system dialog once when user explicitly requests it
         _ = TextInjector.isAccessibilityTrusted(promptIfNeeded: true)

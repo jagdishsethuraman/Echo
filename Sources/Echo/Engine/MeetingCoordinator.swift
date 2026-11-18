@@ -1,6 +1,21 @@
 import Foundation
 import CoreMedia
 
+public final class MeetingAudioLevels: ObservableObject, @unchecked Sendable {
+    @Published public var micLevel: Float = 0.0
+    @Published public var systemLevel: Float = 0.0
+
+    public init(micLevel: Float = 0.0, systemLevel: Float = 0.0) {
+        self.micLevel = micLevel
+        self.systemLevel = systemLevel
+    }
+
+    public func update(mic: Float, system: Float) {
+        self.micLevel = mic
+        self.systemLevel = system
+    }
+}
+
 public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     public let dualChannel: DualChannelCoordinator
     public let phononRunner: PhononProcessRunner
@@ -10,9 +25,12 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     private let transcriptionService: TranscriptionService
     
     @Published public var activeSession: MeetingSession?
-    @Published public var micLevel: Float = 0.0
-    @Published public var systemLevel: Float = 0.0
+    public let audioLevels = MeetingAudioLevels()
     @Published public var captureError: String? = nil
+    
+    /// Backward-compatibility forwarding properties (not published to avoid invalidating parent views)
+    public var micLevel: Float { audioLevels.micLevel }
+    public var systemLevel: Float { audioLevels.systemLevel }
     
     private let callbackLock = NSLock()
     private var _onSessionUpdated: ((MeetingSession) -> Void)?
@@ -112,8 +130,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     private func setupVADHandlers() {
         dualChannel.onDualLevelsUpdated = { [weak self] mic, sys in
             DispatchQueue.main.async {
-                self?.micLevel = mic
-                self?.systemLevel = sys
+                self?.audioLevels.update(mic: mic, system: sys)
             }
         }
         

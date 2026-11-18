@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-11-18
+
+### Fixed & Hardened
+- **Meter throttling & re-render isolation (`UX-02`):** Audio levels are isolated inside a dedicated `MeetingAudioLevels` observable object consumed exclusively by `LiveAudioMetersCluster`. The meeting studio transcript timeline, decisions, action items, and search views no longer re-evaluate on audio ticks.
+- **Graceful shutdown & crash cleanup (`UX-04`):** Wired `NSApplicationDelegate.applicationWillTerminate` through `AppCoordinator.shutdownGracefully()` to stop active dictation, record `endTime` on open meeting sessions, flush SQLite WAL checkpoints, and release CoreAudio resources cleanly.
+- **Secure temporary audio sandbox (`SEC-01`):** All intermediate audio PCM/WAV slices are restricted to `Application Support/Echo/tmp_audio` created with `0700` POSIX directory permissions and `0600` file permissions. Stale or orphaned `.wav` files are swept on launch and termination.
+- **Global menu shortcuts (`INJ-02`):** Registered global `NSEvent` key monitoring for `⇧⌘E` (Meeting Studio), `⇧⌘D` (Dictation Toggle), `⇧⌘C` (Copy Last Dictation), and `⇧⌘R` (Meeting Recording), making them functional across all applications when Accessibility is granted.
+- **Injection cascade & clipboard preservation (`INJ-03`, `SEC-02`):** Prioritized synthetic Cmd+V paste ahead of typing in the default cascade for instant, atomic insertion. Added optional non-destructive clipboard restoration (`restorePreviousClipboard`). Removed the AppleScript fallback, eliminating AppleEvents / Automation consent prompts.
+- **Dead code removal (`BUILD-03`):** Removed unused prototype `PhononClient.swift`, stripped orphaned `BenchmarkResult`, and mapped process failures to descriptive `PhononClientError.processError`.
+- **Documentation synchronization (`DOC-01`):** Harmonized README, ARCHITECTURE, and ROADMAP with actual codebase behavior (status bar level, hotkey behaviors, and 3-tier cascade).
+
 ## [1.3.0] - 2026-11-18
 
 ### Changed

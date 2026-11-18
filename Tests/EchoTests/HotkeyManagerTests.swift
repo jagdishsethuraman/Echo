@@ -164,4 +164,33 @@ struct HotkeyManagerTests {
         #expect(manager.isLocked == false)
         #expect(upCount.value == 1)
     }
+
+    @Test func globalMenuEquivalentShortcutsTriggerCallbacks() {
+        let manager = HotkeyManager()
+        let studioCount = EventCounter()
+        let dictateCount = EventCounter()
+        let copyCount = EventCounter()
+        let meetingCount = EventCounter()
+
+        manager.onOpenMeetingStudio = { studioCount.increment() }
+        manager.onToggleDictation = { dictateCount.increment() }
+        manager.onCopyLastDictation = { copyCount.increment() }
+        manager.onToggleMeetingRecording = { meetingCount.increment() }
+
+        // Test ⇧⌘E -> Meeting Studio
+        manager.simulateKeyShortcut(characters: "e", modifiers: [.command, .shift])
+        #expect(studioCount.value == 1)
+
+        // Test ⇧⌘D -> Toggle Dictation
+        manager.simulateKeyShortcut(characters: "d", modifiers: [.command, .shift])
+        #expect(dictateCount.value == 1)
+
+        // Test ⇧⌘C -> Copy Last Dictation
+        manager.simulateKeyShortcut(characters: "c", modifiers: [.command, .shift])
+        #expect(copyCount.value == 1)
+
+        // Test ⇧⌘R -> Start/Stop Meeting
+        manager.simulateKeyShortcut(characters: "r", modifiers: [.command, .shift])
+        #expect(meetingCount.value == 1)
+    }
 }

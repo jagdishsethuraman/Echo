@@ -23,7 +23,7 @@ public final class TranscriptionService: @unchecked Sendable {
     public init(
         runner: PhononProcessRunner,
         maxConcurrent: Int = 1,
-        tempDirectory: URL = FileManager.default.temporaryDirectory
+        tempDirectory: URL = AudioTempDirectory.rootURL
     ) {
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
         self.engine = { pcmData in
@@ -31,7 +31,8 @@ public final class TranscriptionService: @unchecked Sendable {
             let tempFile = tempDirectory.appendingPathComponent("echo_segment_\(UUID().uuidString).wav")
             defer { try? FileManager.default.removeItem(at: tempFile) }
             
-            try wavData.write(to: tempFile)
+            try wavData.write(to: tempFile, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempFile.path)
             let (text, _) = try await runner.transcribe(fileURL: tempFile)
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }

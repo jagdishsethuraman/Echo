@@ -7,12 +7,12 @@ This document outlines the strategic engineering roadmap, architectural mileston
 ## 🗺️ Milestone Overview
 
 ```
- v1.0 [SHIPPED]          v1.1 [CURRENT]          v1.2 [PLANNED]          v2.0 [FUTURE]
+ v1.0 [SHIPPED]          v1.3 [SHIPPED]          v1.4 [CURRENT]          v2.0 [FUTURE]
 ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-│ Core Native App  │──▶│ Local LLM Notes  │──▶│ Speaker Diarize  │──▶│ Semantic Search  │
-│ Phonon-2 STT     │   │ Hotkey Remapper  │   │ Multi-Language   │   │ Bi-dir Obsidian  │
-│ Universal Paste  │   │ Audio Sensitivity│   │ Voice Profiles   │   │ Raycast/Alfred   │
-│ SQLite & Memory  │   │ UI Audio Waves   │   │ Meeting Chapters │   │ Cloud Optional   │
+│ Core Native App  │──▶│ Hardened Audio   │──▶│ Local LLM Notes  │──▶│ Semantic Search  │
+│ Phonon-2 STT     │   │ Dynamic Notes    │   │ Hotkey Remapper  │   │ Bi-dir Obsidian  │
+│ Universal Paste  │   │ Graphite UI / TCC│   │ Speaker Diarize  │   │ Raycast/Alfred   │
+│ SQLite & Memory  │   │ Bounded Queue    │   │ Voice Profiles   │   │ Cloud Optional   │
 └──────────────────┘   └──────────────────┘   └──────────────────┘   └──────────────────┘
 ```
 

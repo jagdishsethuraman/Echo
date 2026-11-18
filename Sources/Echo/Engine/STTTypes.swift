@@ -8,18 +8,11 @@ public struct TranscriptionResponse: Codable, Sendable {
     }
 }
 
-public struct BenchmarkResult: Sendable {
-    public let audioDurationSeconds: Double
-    public let roundTripTimeMs: Double
-    public let realTimeFactor: Double
-    public let transcript: String
-    public let success: Bool
-}
-
 public enum PhononClientError: LocalizedError, Sendable {
     case invalidURL
     case networkError(String)
     case serverError(statusCode: Int, message: String)
+    case processError(statusCode: Int, message: String)
     case decodingError(String)
     case audioFileNotFound(String)
     case executableNotFound(String)
@@ -33,6 +26,8 @@ public enum PhononClientError: LocalizedError, Sendable {
             return "Network connection error: \(msg)"
         case .serverError(let code, let msg):
             return "Server responded with HTTP \(code): \(msg)"
+        case .processError(let code, let msg):
+            return "Speech process exited with status \(code): \(msg)"
         case .decodingError(let msg):
             return "Failed to decode response: \(msg)"
         case .audioFileNotFound(let path):

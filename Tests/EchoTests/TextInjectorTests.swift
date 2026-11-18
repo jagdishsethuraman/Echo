@@ -57,7 +57,7 @@ struct TextInjectorTests {
         #expect(pasteboard.string(forType: .string) == "previous")
     }
     
-    @Test func shortTranscriptIsTypedDirectly() async {
+    @Test func defaultOrderUsesSyntheticPaste() async {
         let pasteboard = InMemoryPasteboard(initialString: "old clipboard")
         let poster = MockEventPoster()
         let injector = makeInjector(pasteboard: pasteboard, poster: poster)
@@ -65,10 +65,42 @@ struct TextInjectorTests {
         let result = await injector.inject(text: "hello world")
         
         #expect(result.success)
+        #expect(result.method == .syntheticPaste)
+        #expect(pasteboard.string(forType: .string) == "Hello world ")
+        #expect(poster.postedCount == 1)
+        #expect(poster.typedCount == 0)
+    }
+
+    @Test func typingOrderUsesDirectTypingForShortText() async {
+        let pasteboard = InMemoryPasteboard(initialString: "old clipboard")
+        let poster = MockEventPoster()
+        let injector = makeInjector(pasteboard: pasteboard, poster: poster)
+        
+        let result = await injector.inject(
+            text: "hello world",
+            options: InjectionOptions(order: .axDirectThenTypingThenPaste)
+        )
+        
+        #expect(result.success)
         #expect(result.method == .directTyping)
         #expect(pasteboard.string(forType: .string) == "Hello world ")
         #expect(poster.typedCount == "Hello world ".count)
         #expect(poster.postedCount == 0)
+    }
+    
+    @Test func restoreClipboardPreservesOriginalContent() async {
+        let pasteboard = InMemoryPasteboard(initialString: "crucial user clipboard content")
+        let poster = MockEventPoster()
+        let injector = makeInjector(pasteboard: pasteboard, poster: poster)
+        
+        let result = await injector.inject(
+            text: "temporary dictated snippet",
+            options: InjectionOptions(restorePreviousClipboard: true)
+        )
+        
+        #expect(result.success)
+        #expect(result.method == .syntheticPaste)
+        #expect(pasteboard.string(forType: .string) == "crucial user clipboard content")
     }
     
     @Test func pasteIsUsedWhenDirectTypingIsDisabled() async {
@@ -78,7 +110,7 @@ struct TextInjectorTests {
         
         let result = await injector.inject(
             text: "meeting notes",
-            options: InjectionOptions(useDirectTyping: false)
+            options: InjectionOptions(useDirectTyping: false, order: .axDirectThenTypingThenPaste)
         )
         
         #expect(result.success)

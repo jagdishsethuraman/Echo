@@ -15,10 +15,34 @@ public struct ActionItemState: Identifiable, Sendable {
     }
 }
 
+public struct LiveAudioMetersCluster: View {
+    @ObservedObject var levels: MeetingAudioLevels
+
+    public init(levels: MeetingAudioLevels) {
+        self.levels = levels
+    }
+
+    public var body: some View {
+        HStack(spacing: 14) {
+            AudioMeterPill(label: "MIC", level: levels.micLevel, color: EchoTheme.accent)
+            AudioMeterPill(label: "MEETING", level: levels.systemLevel, color: EchoTheme.attendeeAccent)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .background {
+            Capsule(style: .continuous)
+                .fill(EchoTheme.cardBackgroundSubtle)
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(EchoTheme.borderLight, lineWidth: 1)
+        }
+    }
+}
+
 public struct MeetingStudioView: View {
     public let session: MeetingSession
-    public let micLevel: Float
-    public let systemLevel: Float
+    public let audioLevels: MeetingAudioLevels
     public let isRecording: Bool
 
     public var onToggleRecord: (() -> Void)?
@@ -27,6 +51,9 @@ public struct MeetingStudioView: View {
     @ObservedObject var memoryState = WordMemoryState.shared
     @ObservedObject var coordinator = AppCoordinator.shared
     @ObservedObject var meetingCoordinator = AppCoordinator.shared.meetingCoordinator
+
+    public var micLevel: Float { audioLevels.micLevel }
+    public var systemLevel: Float { audioLevels.systemLevel }
 
     @State private var searchFilter: String = ""
     @State private var showNotesCopied: Bool = false
@@ -39,18 +66,33 @@ public struct MeetingStudioView: View {
 
     public init(
         session: MeetingSession,
+        audioLevels: MeetingAudioLevels = MeetingAudioLevels(),
+        isRecording: Bool = false,
+        onToggleRecord: (() -> Void)? = nil,
+        onExportMarkdown: (() -> Void)? = nil
+    ) {
+        self.session = session
+        self.audioLevels = audioLevels
+        self.isRecording = isRecording
+        self.onToggleRecord = onToggleRecord
+        self.onExportMarkdown = onExportMarkdown
+    }
+
+    public init(
+        session: MeetingSession,
         micLevel: Float = 0.0,
         systemLevel: Float = 0.0,
         isRecording: Bool = false,
         onToggleRecord: (() -> Void)? = nil,
         onExportMarkdown: (() -> Void)? = nil
     ) {
-        self.session = session
-        self.micLevel = micLevel
-        self.systemLevel = systemLevel
-        self.isRecording = isRecording
-        self.onToggleRecord = onToggleRecord
-        self.onExportMarkdown = onExportMarkdown
+        self.init(
+            session: session,
+            audioLevels: MeetingAudioLevels(micLevel: micLevel, systemLevel: systemLevel),
+            isRecording: isRecording,
+            onToggleRecord: onToggleRecord,
+            onExportMarkdown: onExportMarkdown
+        )
     }
 
     private var decisions: [String] {
@@ -193,20 +235,7 @@ public struct MeetingStudioView: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: 14) {
-                AudioMeterPill(label: "MIC", level: micLevel, color: EchoTheme.accent)
-                AudioMeterPill(label: "MEETING", level: systemLevel, color: EchoTheme.attendeeAccent)
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background {
-                Capsule(style: .continuous)
-                    .fill(EchoTheme.cardBackgroundSubtle)
-            }
-            .overlay {
-                Capsule(style: .continuous)
-                    .strokeBorder(EchoTheme.borderLight, lineWidth: 1)
-            }
+            LiveAudioMetersCluster(levels: audioLevels)
 
             Button {
                 memoryState.reload()

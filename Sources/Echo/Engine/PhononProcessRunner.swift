@@ -52,7 +52,7 @@ public final class PhononProcessRunner: @unchecked Sendable {
             let message = result.stderr.isEmpty
                 ? "fermion exited with status \(result.status)"
                 : result.stderr
-            throw PhononClientError.serverError(statusCode: Int(result.status), message: message)
+            throw PhononClientError.processError(statusCode: Int(result.status), message: message)
         }
         
         return (text: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), latencyMs: latencyMs)

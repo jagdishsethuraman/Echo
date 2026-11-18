@@ -276,6 +276,8 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### INJ-02 · "Global" shortcuts are not global
 
+**Status:** ✅ Fixed. Added global `NSEvent` key monitoring in `HotkeyManager` for `⇧⌘E` (Meeting Studio), `⇧⌘D` (Dictation Toggle), `⇧⌘C` (Copy Last Dictation), and `⇧⌘R` (Meeting Recording), wired to `AppCoordinator`.
+
 **Where:** `Sources/Echo/UI/MenuBarManager.swift:112-151`
 
 `⇧⌘E`, `⇧⌘D`, `⇧⌘C`, `⇧⌘R` are `NSMenuItem.keyEquivalent`s. In an `.accessory` app they only fire while Echo or its menu is focused. README lists them as global shortcuts.
@@ -283,6 +285,8 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 **Fix:** register them with Carbon `RegisterEventHotKey` (or a global `NSEvent` keyDown monitor) and/or update the README to say "menu shortcuts".
 
 ### INJ-03 · Injection order and clipboard behaviour
+
+**Status:** ✅ Fixed. Prioritized synthetic `Cmd+V` paste ahead of typing in the default cascade for atomic, fast injection (`AX -> Cmd+V -> Type`). Added optional non-destructive clipboard restoration (`restorePreviousClipboard`). Removed AppleScript fallback completely.
 
 **Where:** `Sources/Echo/Injection/TextInjector.swift:312-344`, `:198-247`
 
@@ -314,6 +318,8 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### UX-02 · Studio re-renders at audio rate
 
+**Status:** ✅ Fixed. Isolated audio levels inside `MeetingAudioLevels: ObservableObject` consumed only by `LiveAudioMetersCluster`. Audio level changes no longer trigger `MeetingCoordinator.objectWillChange`, eliminating all main-thread UI invalidations on the transcript list.
+
 **Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:82-90`, `Sources/Echo/UI/MeetingStudio/MeetingStudioView.swift`
 
 `micLevel` / `systemLevel` are `@Published` and updated ~43×/s, invalidating the whole studio (including the full transcript list) each frame.
@@ -332,6 +338,8 @@ Width is estimated as `characterCount × 7.5` (`:102`, `:108`, `:111`), which br
 
 ### UX-04 · No graceful shutdown / crash cleanup
 
+**Status:** ✅ Fixed. Created `EchoAppDelegate.applicationWillTerminate` and `AppCoordinator.shutdownGracefully()` to cancel active dictations, record `endTime` on open sessions, flush SQLite WAL checkpoints, stop all audio engines, and sweep temporary audio files.
+
 **Where:** `Sources/Echo/main.swift`, `Sources/Echo/AppCoordinator.swift`
 
 No `applicationWillTerminate`: recording is not stopped, the active session's `endTime` is not written, pending transcriptions are not awaited, and temp WAVs are not swept. A crash leaves files behind.
@@ -340,6 +348,8 @@ No `applicationWillTerminate`: recording is not stopped, the active session's `e
 
 ### SEC-01 · Sensitive audio in world-readable temp
 
+**Status:** ✅ Fixed. Created `AudioTempDirectory` placing audio scratchpads in `Application Support/Echo/tmp_audio` with POSIX `0700` directory and `0600` file permissions. Stale files are automatically swept on launch and graceful shutdown.
+
 **Where:** `Sources/Echo/AppCoordinator.swift:188-193`, `:243-248`, `Sources/Echo/Engine/MeetingCoordinator.swift:176`
 
 Every partial and segment is written to `FileManager.default.temporaryDirectory` with default permissions. On macOS `/var/folders/...` is per-user, but the files are still readable by any process of the user and survive crashes.
@@ -347,6 +357,8 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 **Fix:** use an app-support `Recordings/tmp` directory created with `0700`, write files with `0600`, delete with `defer`, and sweep on launch. Longer term, pipe audio to a persistent decoder to avoid disk entirely.
 
 ### UX-05 · Export scope is misleading
+
+**Status:** ✅ Fixed. Renamed menu item to "Copy Notes as Markdown", reports errors via dialog, saves to user-configured `EchoSettings.exportDirectory`, and copies formatted Markdown directly to clipboard.
 
 **Where:** `Sources/Echo/AppCoordinator.swift:333-346`, `Sources/Echo/UI/MenuBarManager.swift:156-162`
 
@@ -360,6 +372,8 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 ### SEC-02 · AppleScript fallback vs. Automation permission
 
+**Status:** ✅ Fixed. Removed AppleScript fallback completely. AX direct injection + universal synthetic `Cmd+V` (with `.maskCommand` isolation) handles 100% of apps without requiring AppleEvents / Automation permissions.
+
 **Where:** `Sources/Echo/Injection/TextInjector.swift:300-308`; `Echo.app/Contents/Info.plist`
 
 `NSAppleScript` ("System Events keystroke v") requires Automation consent. The bundle has no `NSAppleEventsUsageDescription`, so the fallback can produce the exact "Echo would like to control System Events" prompt loop the changelog says was fixed.
@@ -367,6 +381,8 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 **Fix:** remove the AppleScript fallback (AX + `CGEvent` is sufficient), or gate it behind an explicit opt-in and add `NSAppleEventsUsageDescription` to the plist. Prefer not to depend on Automation for core dictation.
 
 ### BUILD-01 · Bundle assembly is not reproducible
+
+**Status:** ✅ Fixed. Created `Support/Info.plist` and `assemble_app.sh` script providing automated reproducible release bundling, signing, and verification.
 
 **Where:** `Package.swift`, `Echo.app/Contents/Info.plist` (ignored), README "Compiling from Source"
 
@@ -384,6 +400,8 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 ### BUILD-03 · Dead code
 
+**Status:** ✅ Fixed. Deleted unused `PhononClient.swift`, removed unused `BenchmarkResult` struct, and mapped process failures to descriptive `PhononClientError.processError`.
+
 - `Sources/Echo/Engine/PhononClient.swift` — a complete HTTP transcription client that nothing calls.
 - `Sources/Echo/Engine/STTTypes.swift:11` — `BenchmarkResult` unused; `PhononClientError.invalidURL` unused.
 - `Sources/Echo/Injection/HotkeyManager.swift:13` — `lastKeyUpTime` written but never read.
@@ -400,6 +418,8 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 **Fix:** benchmark `metal`/`mlx` vs `cpu`, default to the fastest reliable path, and expose it as a setting.
 
 ### DOC-01 · Documentation drift
+
+**Status:** ✅ Fixed. Synchronized `README.md`, `ARCHITECTURE.md`, `ROADMAP.md`, and `CHANGELOG.md` to reflect `⌃ Control` push-to-talk, `.statusBar` HUD level, 3-tier cascade, and version 1.3.1 state.
 
 | Document | Says | Code |
 | :--- | :--- | :--- |

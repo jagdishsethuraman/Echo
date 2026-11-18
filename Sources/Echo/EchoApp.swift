@@ -1,11 +1,23 @@
 import AppKit
 import Foundation
 
+final class EchoAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        AppCoordinator.shared.shutdownGracefully()
+    }
+}
+
 @main
 struct EchoMain {
     static func main() async {
+        // Clean any leftover audio files from prior sessions or unexpected terminations
+        AudioTempDirectory.sweepOrphanedAudioFiles()
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        
+        let delegate = EchoAppDelegate()
+        app.delegate = delegate
         
         let args = CommandLine.arguments
 

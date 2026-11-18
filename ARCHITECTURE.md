@@ -172,7 +172,8 @@ CREATE INDEX IF NOT EXISTS idx_dictionary_pattern ON dictionary(raw_pattern);
 
 - **Floating HUD Pill (`FloatingPillPanel.swift`):**
   - Inherits from `NSPanel` with style mask `[.borderless, .nonactivatingPanel]`.
-  - Properties: `canBecomeKey = false`, `canBecomeMain = false`, level `.floating`.
+  - Properties: `canBecomeKey = false`, `canBecomeMain = false`, level `.statusBar`.
+  - Anchors dynamically to the display containing the mouse cursor (`NSMouseInRect`).
   - Never steals window focus or disrupts the user's active typing cursor.
 - **Meeting Studio (`MeetingStudioWindow.swift`):**
   - Standard floating utility window (`880x600`) with `.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView`.

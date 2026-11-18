@@ -149,19 +149,30 @@ public final class MockEventPoster: EventPosterProtocol, @unchecked Sendable {
 
 // MARK: - Injection Models & Engine
 
+public enum InjectionCascadeOrder: String, Sendable {
+    case axDirectThenPasteThenTyping = "AX -> Cmd+V -> Type"
+    case axDirectThenTypingThenPaste = "AX -> Type -> Cmd+V"
+}
+
 public struct InjectionOptions: Sendable {
     public var addTrailingSpace: Bool
     public var autoCapitalizeFirstLetter: Bool
     public var useDirectTyping: Bool
+    public var restorePreviousClipboard: Bool
+    public var order: InjectionCascadeOrder
     
     public init(
         addTrailingSpace: Bool = true,
         autoCapitalizeFirstLetter: Bool = true,
-        useDirectTyping: Bool = true
+        useDirectTyping: Bool = true,
+        restorePreviousClipboard: Bool = false,
+        order: InjectionCascadeOrder = .axDirectThenPasteThenTyping
     ) {
         self.addTrailingSpace = addTrailingSpace
         self.autoCapitalizeFirstLetter = autoCapitalizeFirstLetter
         self.useDirectTyping = useDirectTyping
+        self.restorePreviousClipboard = restorePreviousClipboard
+        self.order = order
     }
 }
 
@@ -301,51 +312,82 @@ public final class TextInjector: @unchecked Sendable {
         return false
     }
     
-    /// Secondary fallback via AppleScript System Events keystroke
-    public func postCmdVViaAppleScript() -> Bool {
-        let script = "tell application \"System Events\" to keystroke \"v\" using command down"
-        var error: NSDictionary?
-        if let appleScript = NSAppleScript(source: script) {
-            appleScript.executeAndReturnError(&error)
-            return error == nil
-        }
-        return false
-    }
-    
-    /// Master injection pipeline: writes to clipboard, types into field, falls back to Cmd+V
+    /// Master injection pipeline: writes to clipboard, injects via AX -> Paste -> Type cascade,
+    /// with optional non-destructive clipboard restoration.
     @discardableResult
     public func inject(text: String, options: InjectionOptions = InjectionOptions()) async -> (success: Bool, method: InjectionMethod) {
         let prepared = prepareText(text, options: options)
         guard !prepared.isEmpty else { return (false, .clipboardOnly) }
         
-        // 1. Always guarantee transcript is on clipboard first
+        let previousContent = pasteboard.string(forType: .string)
+        
+        // 1. Put prepared transcript on clipboard
         _ = pasteboard.clearContents()
         _ = pasteboard.declareTypes([.string], owner: nil)
         _ = pasteboard.setString(prepared, forType: .string)
         
         // 2. Try Path 1: AX Direct attribute injection
         if tryDirectAccessibilityInjection(text: prepared) {
+            if options.restorePreviousClipboard, let prev = previousContent {
+                _ = pasteboard.clearContents()
+                _ = pasteboard.declareTypes([.string], owner: nil)
+                _ = pasteboard.setString(prev, forType: .string)
+            }
             return (true, .accessibilityDirect)
         }
         
-        // 3. Try Path 2: Direct Unicode Typing (Simulates real-time typing into any focused field)
-        if options.useDirectTyping && prepared.count < 300 {
-            if eventPoster.typeUnicodeString(prepared) {
-                return (true, .directTyping)
+        // 3. Follow configured cascade order
+        switch options.order {
+        case .axDirectThenPasteThenTyping:
+            // Try synthetic Cmd+V paste first (fast, universal, reliable)
+            if eventPoster.postCmdV() {
+                if options.restorePreviousClipboard, let prev = previousContent {
+                    usleep(60_000) // 60ms delay to let target app paste from clipboard before restoring
+                    _ = pasteboard.clearContents()
+                    _ = pasteboard.declareTypes([.string], owner: nil)
+                    _ = pasteboard.setString(prev, forType: .string)
+                }
+                return (true, .syntheticPaste)
+            }
+            
+            // Fallback to direct typing if enabled and text is reasonably short
+            if options.useDirectTyping && prepared.count < 300 {
+                if eventPoster.typeUnicodeString(prepared) {
+                    if options.restorePreviousClipboard, let prev = previousContent {
+                        _ = pasteboard.clearContents()
+                        _ = pasteboard.declareTypes([.string], owner: nil)
+                        _ = pasteboard.setString(prev, forType: .string)
+                    }
+                    return (true, .directTyping)
+                }
+            }
+            
+        case .axDirectThenTypingThenPaste:
+            // Try direct typing first if enabled and text is reasonably short
+            if options.useDirectTyping && prepared.count < 300 {
+                if eventPoster.typeUnicodeString(prepared) {
+                    if options.restorePreviousClipboard, let prev = previousContent {
+                        _ = pasteboard.clearContents()
+                        _ = pasteboard.declareTypes([.string], owner: nil)
+                        _ = pasteboard.setString(prev, forType: .string)
+                    }
+                    return (true, .directTyping)
+                }
+            }
+            
+            // Fallback to Cmd+V paste
+            if eventPoster.postCmdV() {
+                if options.restorePreviousClipboard, let prev = previousContent {
+                    usleep(60_000)
+                    _ = pasteboard.clearContents()
+                    _ = pasteboard.declareTypes([.string], owner: nil)
+                    _ = pasteboard.setString(prev, forType: .string)
+                }
+                return (true, .syntheticPaste)
             }
         }
         
-        // 4. Try Path 3: Cmd+V synthetic paste (Instant universal auto-paste fallback)
-        if eventPoster.postCmdV() {
-            return (true, .syntheticPaste)
-        }
-        
-        // 5. Try Path 4: AppleScript System Events paste fallback
-        if postCmdVViaAppleScript() {
-            return (true, .syntheticPaste)
-        }
-        
-        // 6. Fallback: Saved safely on clipboard
+        // 4. Fallback: Saved safely on clipboard
         return (true, .clipboardOnly)
     }
 }

@@ -59,10 +59,10 @@ Echo requires Accessibility permissions to monitor the `⌃ Control` hotkey and 
 - **Zero Window Focus Theft:** The HUD uses an auxiliary `NSPanel` (`canBecomeKey = false`), ensuring your active text cursor never loses focus.
 
 ### ⌨️ Universal Auto-Paste Pipeline
-Echo automatically routes text through a 3-tier injection cascade:
-1. **Permanent Pasteboard Save:** Declares text on `NSPasteboard.general` without wiping, guaranteeing manual `Cmd+V` fallback.
+Echo automatically routes text through an intelligent injection cascade:
+1. **Permanent Pasteboard Save:** Declares text on `NSPasteboard.general` with optional non-destructive restoration of previous clipboard contents.
 2. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes.
-3. **Synthetic Cmd+V Paste:** Employs `.maskCommand` isolation and a 30ms settle delay to paste instantaneously across 100% of macOS apps.
+3. **Synthetic Cmd+V Paste:** Employs `.maskCommand` isolation and settle delay to paste instantaneously across macOS applications.
 4. **Direct Unicode Typing:** Types UTF-16 code units via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events.
 
 ### 👥 Bot-Free Dual-Channel Meeting Studio

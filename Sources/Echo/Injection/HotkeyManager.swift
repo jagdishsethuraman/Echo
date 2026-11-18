@@ -7,6 +7,12 @@ public final class HotkeyManager: @unchecked Sendable {
     public var onCancel: (() -> Void)?
     public var onLockStateChanged: ((Bool) -> Void)?
     
+    // Global menu-equivalent shortcuts monitored system-wide
+    public var onOpenMeetingStudio: (() -> Void)?
+    public var onToggleDictation: (() -> Void)?
+    public var onCopyLastDictation: (() -> Void)?
+    public var onToggleMeetingRecording: (() -> Void)?
+    
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var globalKeyMonitor: Any?
@@ -164,6 +170,29 @@ public final class HotkeyManager: @unchecked Sendable {
             return
         }
         
+        // Global Command+Shift shortcuts (⇧⌘E, ⇧⌘D, ⇧⌘C, ⇧⌘R)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains([.command, .shift]) {
+            if let key = event.charactersIgnoringModifiers?.lowercased() {
+                switch key {
+                case "e":
+                    onOpenMeetingStudio?()
+                    return
+                case "d":
+                    onToggleDictation?()
+                    return
+                case "c":
+                    onCopyLastDictation?()
+                    return
+                case "r":
+                    onToggleMeetingRecording?()
+                    return
+                default:
+                    break
+                }
+            }
+        }
+        
         // If Control is physically held down and any other key is pressed,
         // this is a chorded shortcut (e.g. Ctrl+C, Ctrl+V, Ctrl+Space, Ctrl+A).
         if isKeyDown {
@@ -231,5 +260,21 @@ public final class HotkeyManager: @unchecked Sendable {
     
     public func simulateEscape() {
         simulateKeyDown(keyCode: 53)
+    }
+
+    public func simulateKeyShortcut(characters: String, modifiers: NSEvent.ModifierFlags) {
+        let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: modifiers,
+            timestamp: Date().timeIntervalSince1970,
+            windowNumber: 0,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: 0
+        ) ?? NSEvent()
+        handleKeyDown(event)
     }
 }

@@ -60,8 +60,7 @@ private struct MeetingStudioHostView: View {
         let session = meetingCoordinator.activeSession ?? MeetingSession(title: "No active session")
         MeetingStudioView(
             session: session,
-            micLevel: meetingCoordinator.micLevel,
-            systemLevel: meetingCoordinator.systemLevel,
+            audioLevels: meetingCoordinator.audioLevels,
             isRecording: coordinator.isMeetingActive,
             onToggleRecord: {
                 Task {
