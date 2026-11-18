@@ -8,6 +8,12 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
     
     private var statusItem: NSStatusItem?
     private let coordinator = AppCoordinator.shared
+    private static let frostTint = NSColor(
+        srgbRed: 0.545,
+        green: 0.708,
+        blue: 0.969,
+        alpha: 1.0
+    )
     
     // Adaptive Pill Timer State
     private var recordingTimer: Timer?
@@ -18,8 +24,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         super.init()
     }
     
-    public func setupMenuBar() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    public func setupMenuBar() {        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let button = statusItem?.button else { return }
         
         button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
@@ -38,20 +43,34 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
     public func updateMenuBarIcon(state: MenuState) {
         self.currentState = state
         guard let button = statusItem?.button else { return }
-        
+
         switch state {
         case .idle:
             stopRecordingTimer()
-            button.title = " ◉"
-            
+            setStatusIcon("waveform", accessibilityLabel: "Echo ready", tint: nil)
+            button.title = ""
+
         case .dictating:
             stopRecordingTimer()
-            button.title = " ◉ Dictating..."
-            
+            setStatusIcon("waveform.badge.mic", accessibilityLabel: "Echo dictating", tint: Self.frostTint)
+            button.title = ""
+
         case .meetingRecording:
             startRecordingTimer()
+            setStatusIcon("record.circle.fill", accessibilityLabel: "Meeting recording", tint: .systemRed)
             updateRecordingTitle()
         }
+    }
+
+    private func setStatusIcon(_ symbolName: String, accessibilityLabel: String, tint: NSColor?) {
+        guard let button = statusItem?.button else { return }
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityLabel)
+            ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: accessibilityLabel)
+        image?.isTemplate = true
+        button.image = image
+        button.imagePosition = .imageLeading
+        button.contentTintColor = tint
+        button.toolTip = accessibilityLabel
     }
     
     private func startRecordingTimer() {
@@ -73,13 +92,13 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
     private func updateRecordingTitle() {
         guard let button = statusItem?.button else { return }
         guard let start = recordingStartTime else {
-            button.title = " ● 00:00"
+            button.title = " 00:00"
             return
         }
         let elapsed = Int(Date().timeIntervalSince(start))
         let minutes = elapsed / 60
         let seconds = elapsed % 60
-        button.title = String(format: " ● %02d:%02d", minutes, seconds)
+        button.title = String(format: " %02d:%02d", minutes, seconds)
     }
     
     public func menuWillOpen(_ menu: NSMenu) {
@@ -91,17 +110,17 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         menu.delegate = self
         
         // Status header
-        let statusItem = NSMenuItem(title: "Echo Speech Intelligence", action: nil, keyEquivalent: "")
+        let statusItem = NSMenuItem(title: "Echo — On-device dictation", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
         
-        let engineItem = NSMenuItem(title: "Engine: Phonon-2 (158 MB INT6 Parakeet-TDT)", action: nil, keyEquivalent: "")
+        let engineItem = NSMenuItem(title: "Phonon-2 speech engine · local", action: nil, keyEquivalent: "")
         engineItem.isEnabled = false
         menu.addItem(engineItem)
         
         // Accessibility Permission Status
         let isTrusted = AXIsProcessTrusted()
-        let axTitle = isTrusted ? "Accessibility: ✓ Granted (Auto-Paste Ready)" : "Accessibility: ⚠ Click to Grant in Settings"
+        let axTitle = isTrusted ? "Accessibility Access: Granted" : "Accessibility Access: Not Granted…"
         let axItem = NSMenuItem(title: axTitle, action: #selector(openAccessibility), keyEquivalent: "")
         axItem.target = self
         menu.addItem(axItem)
@@ -110,7 +129,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Open Meeting Studio Window
         let meetingItem = NSMenuItem(
-            title: "Open Meeting Studio...",
+            title: "Open Meeting Studio",
             action: #selector(openMeetingStudio),
             keyEquivalent: "e"
         )
@@ -120,7 +139,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Quick Dictation Toggle
         let dictateItem = NSMenuItem(
-            title: "Quick Dictation (Hold ⌃ Control · 2x ⌃ Lock)",
+            title: "Toggle Dictation",
             action: #selector(toggleDictation),
             keyEquivalent: "d"
         )
@@ -131,7 +150,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         // Copy Last Dictation to Clipboard
         let hasLastTranscript = !coordinator.lastTranscript.isEmpty
         let copyLastItem = NSMenuItem(
-            title: hasLastTranscript ? "Copy Last Dictation: \"\(coordinator.lastTranscript.prefix(20))...\"" : "Copy Last Dictation",
+            title: "Copy Last Dictation",
             action: #selector(copyLastDictation),
             keyEquivalent: "c"
         )
@@ -154,7 +173,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Export to Markdown
         let exportItem = NSMenuItem(
-            title: "Export All Notes to Obsidian (.md)",
+            title: "Copy Notes as Markdown",
             action: #selector(exportLastMeeting),
             keyEquivalent: ""
         )

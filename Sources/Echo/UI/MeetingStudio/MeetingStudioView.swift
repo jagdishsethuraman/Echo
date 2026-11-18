@@ -1,17 +1,42 @@
 import SwiftUI
+import AppKit
 import ApplicationServices
+
+public struct ActionItemState: Identifiable, Sendable {
+    public let id: UUID
+    public var text: String
+    public var isDone: Bool
+
+    public init(id: UUID = UUID(), text: String, isDone: Bool = false) {
+        self.id = id
+        self.text = text
+        self.isDone = isDone
+    }
+}
 
 public struct MeetingStudioView: View {
     public let session: MeetingSession
     public let micLevel: Float
     public let systemLevel: Float
     public let isRecording: Bool
-    
+
     public var onToggleRecord: (() -> Void)?
     public var onExportMarkdown: (() -> Void)?
-    
+
     @ObservedObject var memoryState = WordMemoryState.shared
-    
+
+    @State private var searchFilter: String = ""
+    @State private var showNotesCopied: Bool = false
+    @State private var newActionText: String = ""
+    @State private var isAddingActionItem: Bool = false
+    @FocusState private var isSearchFocused: Bool
+    @State private var actionItems: [ActionItemState] = [
+        ActionItemState(text: "Benchmark Swift loopback engine", isDone: true),
+        ActionItemState(text: "Build non-activating floating HUD", isDone: true),
+        ActionItemState(text: "Dual-channel loopback & VAD", isDone: false),
+        ActionItemState(text: "Universal clipboard & cursor injection", isDone: false)
+    ]
+
     public init(
         session: MeetingSession,
         micLevel: Float = 0.0,
@@ -27,244 +52,571 @@ public struct MeetingStudioView: View {
         self.onToggleRecord = onToggleRecord
         self.onExportMarkdown = onExportMarkdown
     }
-    
+
+    private var filteredSegments: [TranscriptSegment] {
+        let trimmed = searchFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return session.segments }
+        return session.segments.filter {
+            $0.text.localizedCaseInsensitiveContains(trimmed) ||
+            $0.speaker.rawValue.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    private func copyExecutiveNotes() {
+        var notes = "## \(session.title) - Notes\n\n"
+        notes += "### Key Decisions\n"
+        notes += "- Single binary unified app (saves 1.2 GB RAM)\n"
+        notes += "- Phonon-2 INT6 locked as primary offline STT\n"
+        notes += "- Every dictation saved to clipboard + studio timeline\n\n"
+        notes += "### Action Items\n"
+        for item in actionItems {
+            let mark = item.isDone ? "[x]" : "[ ]"
+            notes += "- \(mark) \(item.text)\n"
+        }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(notes, forType: .string)
+
+        withAnimation(.easeOut(duration: 0.15)) {
+            showNotesCopied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            withAnimation(.easeOut(duration: 0.2)) {
+                showNotesCopied = false
+            }
+        }
+    }
+
+    private func commitNewActionItem() {
+        let trimmed = newActionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        actionItems.append(ActionItemState(text: trimmed, isDone: false))
+        newActionText = ""
+    }
+
+    // MARK: - Body
+
     public var body: some View {
         VStack(spacing: 0) {
-            // Swiss Editorial Top Bar
-            HStack(spacing: 16) {
-                // Atelier Status Pill
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(isRecording ? EchoTheme.recordingRed : EchoTheme.accent)
-                        .frame(width: 8, height: 8)
-                        .shadow(color: isRecording ? EchoTheme.recordingRed.opacity(0.8) : Color.clear, radius: 4)
-                    Text("ECHO // ACOUSTIC STUDIO")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(EchoTheme.accent)
-                    Text("· \(session.title)")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(EchoTheme.textSecondary)
-                }
-                
-                Spacer()
-                
-                // Hardware & Telemetry meters
-                HStack(spacing: 12) {
-                    AudioMeterPill(label: "MIC", level: micLevel, color: EchoTheme.accent)
-                    AudioMeterPill(label: "MEETING", level: systemLevel, color: EchoTheme.attendeeAccent)
-                    
-                    // Word Memory & Dictionary Button
-                    Button(action: {
-                        memoryState.reload()
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                            memoryState.isVisible.toggle()
-                        }
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "character.book.closed.fill")
-                                .font(.system(size: 9))
-                            Text("Memory (\(memoryState.entries.count))")
-                        }
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(memoryState.isVisible ? Color.black : EchoTheme.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(memoryState.isVisible ? EchoTheme.accent : EchoTheme.accent.opacity(0.12))
-                        .cornerRadius(6)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.accent.opacity(0.4), lineWidth: 1))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    
-                    // Meeting Record Toggle Button
-                    Button(action: { onToggleRecord?() }) {
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(isRecording ? EchoTheme.recordingRed : EchoTheme.accent)
-                                .frame(width: 6, height: 6)
-                            Text(isRecording ? "Stop Meeting" : "Start Meeting")
-                        }
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(isRecording ? EchoTheme.recordingRed : EchoTheme.accent)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(isRecording ? EchoTheme.recordingRed.opacity(0.15) : EchoTheme.accent.opacity(0.12))
-                        .cornerRadius(6)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(isRecording ? EchoTheme.recordingRed.opacity(0.4) : EchoTheme.accent.opacity(0.3), lineWidth: 1))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .background(EchoTheme.background)
-            .overlay(Divider().background(EchoTheme.border), alignment: .bottom)
-            
-            // Word Memory Drawer
+            toolbar
+
             if memoryState.isVisible {
                 WordMemoryDrawerView(memoryState: memoryState)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-            
-            // Accessibility Permission Helper Banner (if needed)
+
             if !AXIsProcessTrusted() {
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(EchoTheme.accent)
-                    Text("Accessibility permission needed for auto-pasting at active cursor.")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(EchoTheme.textPrimary)
-                    Spacer()
-                    Button("Grant in System Settings") {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(Color.black)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(EchoTheme.accent)
-                    .cornerRadius(4)
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 6)
-                .background(EchoTheme.accent.opacity(0.12))
-                .overlay(Divider().background(EchoTheme.border), alignment: .bottom)
+                permissionBanner
             }
-            
-            // Bento Grid Split-Pane (Timeline 62% + Live Notes 38%)
+
+            Divider()
+                .overlay(EchoTheme.separator)
+
             HStack(spacing: 0) {
-                // Left Pane: Dual-Channel Conversational Timeline
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Text("CONVERSATION STREAM")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(EchoTheme.textMuted)
-                        Spacer()
-                        Text("PHONON-2 · 37.7X RTF")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundColor(EchoTheme.accent.opacity(0.8))
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(EchoTheme.cardBackground.opacity(0.5))
-                    .overlay(Divider().background(EchoTheme.borderLight), alignment: .bottom)
-                    
-                    TranscriptTimelineView(segments: session.segments)
-                }
-                .frame(maxWidth: .infinity)
-                .background(EchoTheme.background)
-                
-                // Vertical Brass Divider
+                transcriptPane
+                    .frame(maxWidth: .infinity)
+
                 Rectangle()
-                    .fill(EchoTheme.border)
+                    .fill(EchoTheme.separator)
                     .frame(width: 1)
-                
-                // Right Pane: Live AI Executive Notes (Swiss Bento)
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack {
-                        Text("LIVE AI EXECUTIVE NOTES")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(EchoTheme.textMuted)
-                        Spacer()
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 11))
-                            .foregroundColor(EchoTheme.accent)
-                    }
-                    .padding(.bottom, 4)
-                    
-                    // Decisions Card
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Key Decisions")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundColor(EchoTheme.accent)
-                        
-                        VStack(alignment: .leading, spacing: 6) {
-                            DecisionRow(text: "Single binary unified app (saves 1.2 GB RAM).")
-                            DecisionRow(text: "Phonon-2 INT6 locked as primary offline STT.")
-                            DecisionRow(text: "Every dictation saved to clipboard + studio timeline.")
-                        }
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(EchoTheme.cardBackground)
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(EchoTheme.borderLight, lineWidth: 1))
-                    
-                    // Action Items Card
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Action Items")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundColor(EchoTheme.textPrimary)
-                        
-                        VStack(alignment: .leading, spacing: 6) {
-                            ActionCheckRow(isDone: true, text: "Benchmark Swift loopback engine")
-                            ActionCheckRow(isDone: true, text: "Build non-activating floating HUD")
-                            ActionCheckRow(isDone: true, text: "Dual-channel loopback & VAD")
-                            ActionCheckRow(isDone: true, text: "Universal clipboard & cursor injection")
-                        }
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(EchoTheme.cardBackground)
-                    .cornerRadius(10)
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(EchoTheme.borderLight, lineWidth: 1))
-                    
-                    Spacer()
-                    
-                    // Export to Obsidian Button
-                    Button(action: { onExportMarkdown?() }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 12, weight: .bold))
-                            Text("Export Notes to Obsidian (.md)")
-                                .font(.system(size: 12, weight: .bold))
-                        }
-                        .foregroundColor(Color.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(EchoTheme.accent)
-                        .cornerRadius(8)
-                        .shadow(color: EchoTheme.accent.opacity(0.3), radius: 8, x: 0, y: 4)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-                .padding(18)
-                .frame(width: 290)
-                .background(EchoTheme.cardBackground.opacity(0.35))
+
+                notesPane
+                    .frame(width: 320)
             }
         }
-        .frame(minWidth: 780, minHeight: 520)
-        .background(EchoTheme.background)
+        .background(FrostedBackdrop())
+        .preferredColorScheme(.dark)
+        .frame(minWidth: 840, minHeight: 560)
+    }
+
+    // MARK: - Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 14) {
+            appMark
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 8) {
+                    Text("Meeting Studio")
+                        .font(EchoFont.windowTitle)
+                        .foregroundStyle(EchoTheme.textPrimary)
+
+                    statusBadge
+                }
+                Text(session.title)
+                    .font(EchoFont.caption)
+                    .foregroundStyle(EchoTheme.textSecondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 14) {
+                AudioMeterPill(label: "MIC", level: micLevel, color: EchoTheme.accent)
+                AudioMeterPill(label: "MEETING", level: systemLevel, color: EchoTheme.attendeeAccent)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(EchoTheme.cardBackgroundSubtle)
+            }
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(EchoTheme.borderLight, lineWidth: 1)
+            }
+
+            Button {
+                memoryState.reload()
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    memoryState.isVisible.toggle()
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "character.book.closed")
+                        .font(.system(size: 10, weight: .medium))
+                    Text("Memory")
+                        .font(EchoFont.bodyMedium)
+                    Text("\(memoryState.entries.count)")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(memoryState.isVisible ? EchoTheme.textOnAccent : EchoTheme.textSecondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background {
+                            Capsule().fill(memoryState.isVisible ? Color.white.opacity(0.22) : Color.white.opacity(0.07))
+                        }
+                }
+                .foregroundStyle(memoryState.isVisible ? EchoTheme.textOnAccent : EchoTheme.textSecondary)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background {
+                    RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                        .fill(memoryState.isVisible ? EchoTheme.accent : Color.clear)
+                }
+            }
+            .buttonStyle(GlassButtonStyle())
+            .help("Word Memory & Dictionary")
+
+            recordButton
+        }
+        .padding(.leading, 78)
+        .padding(.trailing, 16)
+        .frame(height: 56)
+        .background {
+            ZStack {
+                Color.black.opacity(0.12)
+                LinearGradient(
+                    colors: [Color.white.opacity(0.030), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(EchoTheme.separator).frame(height: 1)
+        }
+    }
+
+    private var appMark: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(EchoTheme.accent.opacity(0.14))
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(EchoTheme.accent.opacity(0.26), lineWidth: 1)
+            Image(systemName: "waveform")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(EchoTheme.accent)
+        }
+        .frame(width: 27, height: 27)
+    }
+
+    private var statusBadge: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(isRecording ? EchoTheme.recordingRed : EchoTheme.textMuted)
+                .frame(width: 5.5, height: 5.5)
+                .shadow(color: isRecording ? EchoTheme.recordingRed.opacity(0.7) : .clear, radius: 3)
+            Text(isRecording ? "Recording" : "Ready")
+                .font(EchoFont.captionMedium)
+                .foregroundStyle(isRecording ? EchoTheme.recordingRed : EchoTheme.textMuted)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2.5)
+        .background {
+            Capsule().fill(isRecording ? EchoTheme.recordingRed.opacity(0.12) : Color.white.opacity(0.055))
+        }
+        .overlay {
+            Capsule().strokeBorder(isRecording ? EchoTheme.recordingRed.opacity(0.24) : EchoTheme.borderLight, lineWidth: 1)
+        }
+    }
+
+    private var recordButton: some View {
+        Button {
+            onToggleRecord?()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isRecording ? "stop.fill" : "record.circle")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(isRecording ? "Stop Meeting" : "Start Meeting")
+                    .font(EchoFont.bodyMedium)
+                    .fixedSize()
+            }
+            .foregroundStyle(isRecording ? EchoTheme.recordingRed : EchoTheme.textOnAccent)
+            .padding(.horizontal, 12)
+            .frame(height: 28)
+        }
+        .buttonStyle(RecordingButtonStyle(isRecording: isRecording))
+        .help(isRecording ? "Stop the current meeting recording" : "Start recording a meeting")
+        .accessibilityLabel(isRecording ? "Stop meeting recording" : "Start meeting recording")
+    }
+
+    // MARK: - Permission banner
+
+    private var permissionBanner: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "hand.raised")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(EchoTheme.accent)
+
+            Text("Accessibility access is off")
+                .font(EchoFont.captionMedium)
+                .foregroundStyle(EchoTheme.textPrimary)
+
+            Text("Echo can't paste into the active app yet.")
+                .font(EchoFont.caption)
+                .foregroundStyle(EchoTheme.textSecondary)
+
+            Spacer(minLength: 8)
+
+            Button("Open System Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .buttonStyle(LinkButtonStyle())
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 34)
+        .background(EchoTheme.accent.opacity(0.055))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(EchoTheme.separator).frame(height: 1)
+        }
+    }
+
+    // MARK: - Transcript pane
+
+    private var transcriptPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Transcript")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(EchoTheme.textPrimary)
+
+                Text("\(session.segments.count)")
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(EchoTheme.textMuted)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1.5)
+                    .background(Capsule().fill(Color.white.opacity(0.07)))
+
+                Spacer(minLength: 10)
+
+                searchField
+
+                HStack(spacing: 4) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 7.5, weight: .semibold))
+                    Text("On-device · Phonon-2")
+                        .font(EchoFont.caption)
+                }
+                .foregroundStyle(EchoTheme.textMuted)
+                .fixedSize()
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 40)
+            .background(Color.white.opacity(0.018))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(EchoTheme.separator).frame(height: 1)
+            }
+
+            if !searchFilter.isEmpty {
+                HStack(spacing: 6) {
+                    Text("\(filteredSegments.count) match\(filteredSegments.count == 1 ? "" : "es")")
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.accent)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+            }
+
+            TranscriptTimelineView(segments: filteredSegments)
+        }
+        .background(Color.black.opacity(0.10))
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(EchoTheme.textMuted)
+
+            ZStack(alignment: .leading) {
+                if searchFilter.isEmpty {
+                    Text("Search transcript")
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textFaint)
+                }
+                TextField("", text: $searchFilter)
+                    .textFieldStyle(.plain)
+                    .font(EchoFont.caption)
+                    .foregroundStyle(EchoTheme.textPrimary)
+                    .focused($isSearchFocused)
+            }
+
+            if !searchFilter.isEmpty {
+                Button {
+                    searchFilter = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(EchoTheme.textMuted)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 7)
+        .frame(width: 186, height: 24)
+        .background {
+            RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                .fill(EchoTheme.controlBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                .strokeBorder(
+                    isSearchFocused ? EchoTheme.accent.opacity(0.7) : EchoTheme.borderLight,
+                    lineWidth: 1
+                )
+        }
+        .animation(.easeOut(duration: 0.12), value: isSearchFocused)
+        .onExitCommand {
+            searchFilter = ""
+            isSearchFocused = false
+        }
+    }
+
+    // MARK: - Notes pane
+
+    private var notesPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Notes")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(EchoTheme.textPrimary)
+
+                Text("AI")
+                    .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(EchoTheme.accent)
+                    .padding(.horizontal, 4.5)
+                    .padding(.vertical, 1.5)
+                    .background(Capsule().fill(EchoTheme.accent.opacity(0.13)))
+
+                Spacer()
+
+                Button(action: copyExecutiveNotes) {
+                    HStack(spacing: 4) {
+                        Image(systemName: showNotesCopied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 9, weight: .medium))
+                        Text(showNotesCopied ? "Copied" : "Copy")
+                            .font(EchoFont.captionMedium)
+                    }
+                    .foregroundStyle(showNotesCopied ? EchoTheme.successGreen : EchoTheme.textSecondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 23)
+                }
+                .buttonStyle(GlassButtonStyle())
+                .fixedSize()
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 40)
+            .background(Color.white.opacity(0.018))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(EchoTheme.separator).frame(height: 1)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    decisionsCard
+                    actionItemsCard
+                }
+                .padding(14)
+            }
+            .scrollIndicators(.hidden)
+
+            exportButton
+        }
+        .background(Color.white.opacity(0.012))
+    }
+
+    private var decisionsCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.seal")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(EchoTheme.accent)
+                Text("Key Decisions")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(EchoTheme.textPrimary)
+                Spacer()
+                Image(systemName: "sparkles")
+                    .font(.system(size: 9))
+                    .foregroundStyle(EchoTheme.textFaint)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                DecisionRow(text: "Single binary unified app (saves 1.2 GB RAM).")
+                DecisionRow(text: "Phonon-2 INT6 locked as primary offline STT.")
+                DecisionRow(text: "Every dictation saved to clipboard + studio timeline.")
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frostedCard()
+    }
+
+    private var actionItemsCard: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(EchoTheme.attendeeAccent)
+                Text("Action Items")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(EchoTheme.textPrimary)
+                Text("\(actionItems.filter(\.isDone).count)/\(actionItems.count)")
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(EchoTheme.textMuted)
+                Spacer()
+
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        isAddingActionItem.toggle()
+                    }
+                } label: {
+                    Image(systemName: isAddingActionItem ? "xmark" : "plus")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(EchoTheme.textSecondary)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help(isAddingActionItem ? "Cancel" : "Add action item")
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach($actionItems) { $item in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            item.isDone.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 12))
+                                .foregroundStyle(item.isDone ? EchoTheme.accent : EchoTheme.textFaint)
+                            Text(item.text)
+                                .font(EchoFont.body)
+                                .foregroundStyle(item.isDone ? EchoTheme.textMuted : EchoTheme.textSecondary)
+                                .strikethrough(item.isDone, color: EchoTheme.textFaint)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if isAddingActionItem {
+                HStack(spacing: 6) {
+                    TextField("New action item", text: $newActionText)
+                        .textFieldStyle(.plain)
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textPrimary)
+                        .padding(.horizontal, 7)
+                        .frame(height: 24)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(EchoTheme.controlBackground)
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(EchoTheme.borderLight, lineWidth: 1)
+                        }
+                        .onSubmit(commitNewActionItem)
+
+                    Button(action: commitNewActionItem) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(EchoTheme.textOnAccent)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(EchoTheme.accent))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frostedCard()
+    }
+
+    private var exportButton: some View {
+        VStack(spacing: 0) {
+            Divider().overlay(EchoTheme.separator)
+
+            Button {
+                onExportMarkdown?()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("Export Notes")
+                        .font(EchoFont.bodyMedium)
+                }
+                .foregroundStyle(EchoTheme.textOnAccent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 30)
+            }
+            .buttonStyle(AccentButtonStyle())
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(EchoTheme.accent)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .padding(14)
+            .help("Copy the meeting summary and action items as Markdown")
+        }
     }
 }
+
+// MARK: - Supporting views
 
 struct DecisionRow: View {
     let text: String
-    var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text("•")
-                .foregroundColor(EchoTheme.accent)
-            Text(text)
-                .font(.system(size: 11, weight: .regular))
-                .foregroundColor(EchoTheme.textSecondary)
-                .lineSpacing(2)
-        }
-    }
-}
 
-struct ActionCheckRow: View {
-    let isDone: Bool
-    let text: String
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 11))
-                .foregroundColor(isDone ? EchoTheme.accent : EchoTheme.textMuted)
+        HStack(alignment: .top, spacing: 7) {
+            Circle()
+                .fill(EchoTheme.accent.opacity(0.7))
+                .frame(width: 3.5, height: 3.5)
+                .padding(.top, 5)
             Text(text)
-                .font(.system(size: 11, weight: isDone ? .regular : .medium))
-                .foregroundColor(isDone ? EchoTheme.textSecondary : EchoTheme.textPrimary)
+                .font(EchoFont.body)
+                .foregroundStyle(EchoTheme.textSecondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -273,119 +625,184 @@ public struct AudioMeterPill: View {
     public let label: String
     public let level: Float
     public let color: Color
-    
+
     public var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundColor(EchoTheme.textMuted)
-            
+                .font(.system(size: 8.5, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(EchoTheme.textMuted)
+
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(EchoTheme.borderLight)
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(color)
+                    Capsule()
+                        .fill(Color.white.opacity(0.09))
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [color.opacity(0.75), color],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                         .frame(width: geo.size.width * CGFloat(min(1.0, max(0.0, level))))
                 }
             }
-            .frame(width: 40, height: 4)
+            .frame(width: 38, height: 3.5)
         }
     }
 }
 
 struct WordMemoryDrawerView: View {
     @ObservedObject var memoryState: WordMemoryState
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("WORD MEMORY & DICTIONARY // SQLITE PERSISTENCE")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(EchoTheme.accent)
+            HStack(spacing: 7) {
+                Image(systemName: "character.book.closed")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(EchoTheme.accent)
+                Text("Word Memory")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(EchoTheme.textPrimary)
+                Text("\(memoryState.entries.count) hotwords")
+                    .font(EchoFont.caption)
+                    .foregroundStyle(EchoTheme.textMuted)
                 Spacer()
-                Text("\(memoryState.entries.count) active hotwords")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(EchoTheme.textMuted)
+                Text("Corrections are applied to new transcripts")
+                    .font(EchoFont.caption)
+                    .foregroundStyle(EchoTheme.textFaint)
             }
-            
-            // Add Word Form
+
             HStack(spacing: 8) {
-                TextField("Misheard text (e.g. phone on)", text: $memoryState.newRawWord)
-                    .textFieldStyle(PlainTextFieldStyle())
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(EchoTheme.cardBackground)
-                    .cornerRadius(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.border, lineWidth: 1))
-                    .foregroundColor(EchoTheme.textPrimary)
-                
+                memoryField("Misheard text (e.g. phone on)", text: $memoryState.newRawWord)
+
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(EchoTheme.accent)
-                
-                TextField("Remembered as (e.g. Phonon)", text: $memoryState.newPreferredWord)
-                    .textFieldStyle(PlainTextFieldStyle())
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(EchoTheme.cardBackground)
-                    .cornerRadius(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.border, lineWidth: 1))
-                    .foregroundColor(EchoTheme.textPrimary)
-                
-                Button(action: {
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(EchoTheme.textMuted)
+
+                memoryField("Remembered as (e.g. Phonon)", text: $memoryState.newPreferredWord)
+
+                Button {
                     memoryState.add()
-                }) {
+                } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
+                        Image(systemName: "plus")
+                            .font(.system(size: 9, weight: .bold))
                         Text("Remember")
+                            .font(EchoFont.captionMedium)
                     }
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.black)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(EchoTheme.accent)
-                    .cornerRadius(6)
+                    .frame(height: 24)
                 }
-                .buttonStyle(PlainButtonStyle())
+                .buttonStyle(AccentButtonStyle())
+                .background {
+                    RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                        .fill(EchoTheme.accent)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous))
             }
-            
-            // Chips / list of remembered words
+
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     ForEach(memoryState.entries) { entry in
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Text(entry.rawPattern)
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(EchoTheme.textSecondary)
+                                .font(EchoFont.mono)
+                                .foregroundStyle(EchoTheme.textSecondary)
                             Image(systemName: "arrow.right")
-                                .font(.system(size: 8))
-                                .foregroundColor(EchoTheme.accent)
+                                .font(.system(size: 7))
+                                .foregroundStyle(EchoTheme.textFaint)
                             Text(entry.preferredReplacement)
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(EchoTheme.accent)
-                            
-                            Button(action: { memoryState.delete(id: entry.id) }) {
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(EchoTheme.accent)
+
+                            Button {
+                                memoryState.delete(id: entry.id)
+                            } label: {
                                 Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(EchoTheme.textMuted)
+                                    .font(.system(size: 7.5, weight: .semibold))
+                                    .foregroundStyle(EchoTheme.textMuted)
                             }
-                            .buttonStyle(PlainButtonStyle())
+                            .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(EchoTheme.cardBackground)
-                        .cornerRadius(6)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(EchoTheme.border, lineWidth: 1))
+                        .frame(height: 23)
+                        .background(Capsule().fill(Color.white.opacity(0.055)))
+                        .overlay(Capsule().strokeBorder(EchoTheme.borderLight, lineWidth: 1))
                     }
                 }
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background(Color(red: 10/255, green: 10/255, blue: 14/255))
-        .overlay(Divider().background(EchoTheme.border), alignment: .bottom)
+        .background(EchoTheme.sidebarBackground.opacity(0.55))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(EchoTheme.separator).frame(height: 1)
+        }
+    }
+
+    private func memoryField(_ prompt: String, text: Binding<String>) -> some View {
+        ZStack(alignment: .leading) {
+            if text.wrappedValue.isEmpty {
+                Text(prompt)
+                    .font(EchoFont.caption)
+                    .foregroundStyle(EchoTheme.textFaint)
+            }
+            TextField("", text: text)
+                .textFieldStyle(.plain)
+                .font(EchoFont.caption)
+                .foregroundStyle(EchoTheme.textPrimary)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .background {
+            RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                .fill(EchoTheme.controlBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                .strokeBorder(EchoTheme.borderLight, lineWidth: 1)
+        }
+    }
+}
+
+// MARK: - Button styles
+
+private struct RecordingButtonStyle: ButtonStyle {
+    let isRecording: Bool
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(isRecording ? EchoTheme.recordingRed : EchoTheme.textOnAccent)
+            .background {
+                RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                    .fill(
+                        isRecording
+                            ? EchoTheme.recordingRed.opacity(isHovered ? 0.22 : 0.15)
+                            : EchoTheme.accent.opacity(configuration.isPressed ? 0.82 : (isHovered ? 1.0 : 0.94))
+                    )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: EchoTheme.controlRadius, style: .continuous)
+                    .strokeBorder(
+                        isRecording ? EchoTheme.recordingRed.opacity(0.35) : Color.white.opacity(0.12),
+                        lineWidth: 1
+                    )
+            }
+            .animation(.easeOut(duration: 0.13), value: isHovered)
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+    }
+}
+
+private struct LinkButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(EchoFont.captionMedium)
+            .foregroundStyle(EchoTheme.accent.opacity(configuration.isPressed ? 0.7 : 1.0))
     }
 }

@@ -25,6 +25,13 @@ swift build
 swift test                     # 63 Swift Testing tests
 ```
 
+Debug builds can render the main surfaces without screen-recording
+permission:
+
+```sh
+.build/debug/Echo --snapshot /tmp/echo-ui
+```
+
 If only Command Line Tools are selected (no Xcode), add:
 
 ```sh

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Native "Graphite Frost" interface:** Replaced the black/brass/lavender theme with a neutral frosted graphite palette, a cool frost-blue primary accent, and a sea-glass secondary accent. Typography now uses SF Pro with monospaced digits only where telemetry benefits from them.
+- **Meeting Studio redesign:** The window now uses real `NSVisualEffectView` vibrancy with a dark appearance, hidden titlebar, autosaved frame, and a unified toolbar-style header showing the session title, recording state, input meters, word memory, and record control. The accessibility notice is a quiet inline banner instead of an amber warning strip.
+- **Transcript & Notes:** Transcript rows use native list spacing with speaker avatars, hover-to-copy, and subtle selection; the notes inspector has frosted cards, action-item progress (`2/4`), and a pinned accent export button.
+- **HUD & menu bar:** The floating pill shares the graphite glass treatment with the frost-blue waveform. The menu-bar item uses SF Symbols for idle, dictating, and recording states, and menu copy was shortened to match macOS conventions.
+- **App icon:** Replaced the old icon with the elk artwork, rebuilt on Apple's 824pt squircle grid with a soft dock shadow and hairline rim. The source, 1024px master, iconset, and regeneration scripts now live in the repo.
+- **Developer tooling:** Debug builds accept `Echo --snapshot <directory>` to render PNGs of the studio and HUD, and Xcode `#Preview`s cover both surfaces for design iteration.
+
+---
+
 ## [1.2.0] - 2026-11-17
 
 ### Added

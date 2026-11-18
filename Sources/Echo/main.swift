@@ -8,7 +8,13 @@ struct EchoMain {
         app.setActivationPolicy(.accessory)
         
         let args = CommandLine.arguments
-        
+
+        #if DEBUG
+        if SnapshotHarness.renderIfRequested() {
+            return
+        }
+        #endif
+
         if args.contains("--test") {
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print("  ECHO — Production Assembly Automated Verification")

@@ -1,70 +1,114 @@
 import AppKit
 
-let inputPath = "/Users/ragavij/.gemini/antigravity/brain/628f6a9a-74d6-4ceb-b207-f7ba2f8a8ab3/.user_uploaded/media_1794852255988_55a2e428.jpg"
-guard let srcImage = NSImage(contentsOfFile: inputPath) else {
-    print("Cannot load source image")
+// Builds the macOS app icon (squircle + shadow) from a square source artwork
+// and writes both the 1024px master and the full .iconset.
+//
+// Usage:
+//   swift build_app_icon.swift [source.png]
+//
+// The default source is AppIconSource.png next to this script. The artwork is
+// drawn to Apple's 824pt icon grid (100pt margins) and clipped to the standard
+// squircle so any background outside the artwork is removed.
+
+let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let inputURL = CommandLine.arguments.count > 1
+    ? URL(fileURLWithPath: CommandLine.arguments[1])
+    : repoRoot.appendingPathComponent("AppIconSource.png")
+
+guard let sourceImage = NSImage(contentsOf: inputURL) else {
+    print("Cannot load source image at \(inputURL.path)")
     exit(1)
 }
 
-let canvasSize: CGFloat = 1024
-let squircleRect = CGRect(x: 100, y: 101, width: 824, height: 824)
-let cornerRadius: CGFloat = 185.0 // Apple standard for 824px squircle
+let canvasSize = 1024
+let squircleRect = CGRect(x: 100, y: 100, width: 824, height: 824)
+let cornerRadius: CGFloat = 185 // Apple's standard for an 824px icon
 
-let outputImage = NSImage(size: NSSize(width: canvasSize, height: canvasSize))
-outputImage.lockFocus()
+func makeBitmap(size: Int) -> NSBitmapImageRep {
+    guard let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: size,
+        pixelsHigh: size,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ) else {
+        print("Could not allocate \(size)px bitmap")
+        exit(1)
+    }
+    rep.size = NSSize(width: size, height: size)
+    return rep
+}
+
+// MARK: - 1024px master
+
+let master = makeBitmap(size: canvasSize)
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: master)
 let ctx = NSGraphicsContext.current!.cgContext
+ctx.interpolationQuality = .high
+ctx.clear(CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize))
 
-// Drop shadow for macOS Dock
+let squirclePath = CGPath(
+    roundedRect: squircleRect,
+    cornerWidth: cornerRadius,
+    cornerHeight: cornerRadius,
+    transform: nil
+)
+
+// Soft dock shadow baked into the icon, matching the previous asset.
 ctx.saveGState()
-let shadowPath = CGPath(roundedRect: squircleRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
-ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 24, color: NSColor(white: 0, alpha: 0.45).cgColor)
+ctx.setShadow(
+    offset: CGSize(width: 0, height: -10),
+    blur: 22,
+    color: NSColor.black.withAlphaComponent(0.42).cgColor
+)
 ctx.setFillColor(NSColor.black.cgColor)
-ctx.addPath(shadowPath)
+ctx.addPath(squirclePath)
 ctx.fillPath()
 ctx.restoreGState()
 
-// Clip to squircle
+// Clip the artwork to the squircle. The source is authored on the same 1024
+// grid, so drawing it full-canvas aligns the artwork's edges with the mask.
 ctx.saveGState()
-let squirclePath = CGPath(roundedRect: squircleRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
 ctx.addPath(squirclePath)
 ctx.clip()
-
-// Draw source image exactly
-srcImage.draw(in: CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize))
-
-// Add crisp subtle inner border
+sourceImage.draw(
+    in: CGRect(x: 0, y: 0, width: canvasSize, height: canvasSize),
+    from: .zero,
+    operation: .copy,
+    fraction: 1.0
+)
 ctx.restoreGState()
+
+// Hairline inner rim keeps the icon separated from dark wallpapers.
 ctx.saveGState()
 ctx.addPath(squirclePath)
-ctx.setStrokeColor(NSColor(white: 1.0, alpha: 0.15).cgColor)
-ctx.setLineWidth(1.5)
+ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.07).cgColor)
+ctx.setLineWidth(1.0)
 ctx.strokePath()
 ctx.restoreGState()
 
-outputImage.unlockFocus()
+NSGraphicsContext.restoreGraphicsState()
 
-// Save 1024x1024 PNG
-let artifactDir = "/Users/ragavij/.gemini/antigravity/brain/628f6a9a-74d6-4ceb-b207-f7ba2f8a8ab3"
-let devDocsDir = "/Users/ragavij/Documents/Developer/dev_docs"
-let echoAppDir = "/Users/ragavij/Documents/Developer/Echo"
-
-guard let tiff = outputImage.tiffRepresentation,
-      let rep = NSBitmapImageRep(data: tiff),
-      let pngData = rep.representation(using: .png, properties: [:]) else {
-    print("Failed to encode PNG")
+guard let masterPNG = master.representation(using: .png, properties: [:]) else {
+    print("Failed to encode master PNG")
     exit(1)
 }
+try! masterPNG.write(to: repoRoot.appendingPathComponent("AppIcon-1024.png"))
+print("Wrote AppIcon-1024.png")
 
-try! pngData.write(to: URL(fileURLWithPath: "\(artifactDir)/echo_app_icon_1024.png"))
-try! pngData.write(to: URL(fileURLWithPath: "\(devDocsDir)/echo_app_icon_1024.png"))
-print("Saved 1024x1024 icon PNG")
+// MARK: - .iconset
 
-// Now generate iconset
-let iconsetPath = "\(echoAppDir)/Echo.iconset"
-try? FileManager.default.removeItem(atPath: iconsetPath)
-try! FileManager.default.createDirectory(atPath: iconsetPath, withIntermediateDirectories: true)
+let iconsetURL = repoRoot.appendingPathComponent("Echo.iconset", isDirectory: true)
+try? FileManager.default.removeItem(at: iconsetURL)
+try! FileManager.default.createDirectory(at: iconsetURL, withIntermediateDirectories: true)
 
-let sizes: [(String, CGFloat)] = [
+let sizes: [(String, Int)] = [
     ("icon_16x16.png", 16),
     ("icon_16x16@2x.png", 32),
     ("icon_32x32.png", 32),
@@ -77,19 +121,23 @@ let sizes: [(String, CGFloat)] = [
     ("icon_512x512@2x.png", 1024)
 ]
 
-for (name, s) in sizes {
-    let resized = NSImage(size: NSSize(width: s, height: s))
-    resized.lockFocus()
-    NSGraphicsContext.current?.imageInterpolation = .high
-    outputImage.draw(in: NSRect(x: 0, y: 0, width: s, height: s), from: .zero, operation: .copy, fraction: 1.0)
-    resized.unlockFocus()
-    
-    if let rTiff = resized.tiffRepresentation,
-       let rRep = NSBitmapImageRep(data: rTiff),
-       let rPng = rRep.representation(using: .png, properties: [:]) {
-        let filePath = "\(iconsetPath)/\(name)"
-        try! rPng.write(to: URL(fileURLWithPath: filePath))
+for (name, size) in sizes {
+    let rep = makeBitmap(size: size)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    let iconContext = NSGraphicsContext.current!.cgContext
+    iconContext.interpolationQuality = .high
+    iconContext.clear(CGRect(x: 0, y: 0, width: size, height: size))
+    master.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+    NSGraphicsContext.restoreGraphicsState()
+
+    guard let png = rep.representation(using: .png, properties: [:]) else {
+        print("Failed to encode \(name)")
+        exit(1)
     }
+    try! png.write(to: iconsetURL.appendingPathComponent(name))
+    print("Wrote \(name) (\(size)x\(size))")
 }
 
-print("Generated full iconset at \(iconsetPath)")
+print("Generated iconset at \(iconsetURL.path)")
+print("Next: python3 make_icns.py")

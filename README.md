@@ -39,7 +39,7 @@ open /Users/ragavij/Documents/Developer/Echo/Echo.app
 ```
 
 ### 2. Grant macOS Accessibility Permission (One-Time)
-Echo requires Accessibility permissions to monitor the `Right ⌥` hotkey and paste text into your active applications:
+Echo requires Accessibility permissions to monitor the `⌃ Control` hotkey and paste text into your active applications:
 1. Open **System Settings → Privacy & Security → Accessibility**.
 2. Select **Echo** and toggle it **ON**.
 *(Echo uses a permanent designated requirement so permissions survive future rebuilds).*
@@ -68,7 +68,7 @@ Echo automatically routes text through a 3-tier injection cascade:
 ### 👥 Bot-Free Dual-Channel Meeting Studio
 - **Acoustic Loopback:** Uses macOS 14+ `ScreenCaptureKit` (`capturesAudio = true`, `excludesCurrentProcessAudio = true`) to capture meeting audio with zero acoustic echo.
 - **Rolling Energy VAD:** Automatically segments speech upon 600ms natural silence boundaries.
-- **Swiss Atelier Bento Interface:** Obsidian (`#050507`) and atelier brass (`#e5a93c`) 62/38 split layout separating conversation streams from live AI notes.
+- **Graphite Frost Interface:** Native `NSVisualEffectView` frosted dark-gray surfaces with a cool frost-blue accent, using a 62/38 split layout separating conversation streams from live AI notes.
 - **1-Click Obsidian Export:** Exports structured Markdown notes directly to your Second Brain or clipboard.
 
 ### 🧠 Word Memory & Speech Lexicon Engine
@@ -82,8 +82,8 @@ Echo automatically routes text through a 3-tier injection cascade:
 
 | Shortcut | Action | Description |
 | :--- | :--- | :--- |
-| **Hold `Right ⌥`** | **Push-to-Talk Dictation** | Stream live speech into floating HUD; auto-paste on release |
-| **`⇧⌘E`** | **Open Meeting Studio** | Toggle the Swiss Atelier Bento meeting studio window |
+| **Hold `⌃ Control`** | **Push-to-Talk Dictation** | Stream live speech into floating HUD; auto-paste on release |
+| **`⇧⌘E`** | **Open Meeting Studio** | Toggle the frosted Meeting Studio window |
 | **`⇧⌘D`** | **Toggle Dictation** | Programmatic push-to-talk toggle switch |
 | **`⇧⌘C`** | **Copy Last Dictation** | Instantly re-copies most recent transcript to clipboard |
 | **`⇧⌘R`** | **Start/Stop Meeting** | Begin or conclude dual-channel meeting recording |
@@ -97,14 +97,14 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
 
 ```
                                   ┌─────────────────────────────┐
-                                  │   Right ⌥ Push-to-Talk      │
+                                  │   ⌃ Control Push-to-Talk    │
                                   └──────────────┬──────────────┘
                                                  │
                   ┌──────────────────────────────┴──────────────────────────────┐
                   ▼                                                             ▼
      ┌────────────────────────┐                                   ┌───────────────────────────┐
      │  Floating HUD Panel    │                                   │    Meeting Studio Window  │
-     │  • Non-activating NSPanel│                                  │    • Swiss Atelier Bento  │
+     │  • Non-activating NSPanel│                                  │    • Graphite Frost glass │
      │  • Live 650ms Stream   │                                   │    • 62/38 Split Timeline │
      │  • Audio Waveform VU   │                                   │    • Word Memory Drawer   │
      └────────────┬───────────┘                                   └─────────────┬─────────────┘
@@ -155,10 +155,15 @@ Echo/
 │   ├── Injection/           # TextInjector, SystemEventPoster, HotkeyManager
 │   ├── Storage/             # SQLite DatabaseManager, WordMemoryEngine, MeetingModels
 │   ├── UI/                  # Floating HUD pill, MenuBarManager, DesignSystem
-│   │   └── MeetingStudio/   # Swiss Atelier Bento views, timeline, and controls
+│   │   └── MeetingStudio/   # Frosted studio views, timeline, and controls
 │   └── main.swift           # Application entry point & lifecycle
 ├── test_samples/            # 16kHz reference audio files for automated tests
+├── AppIconSource.png        # Elk artwork used to build the app icon
+├── AppIcon-1024.png         # Generated 1024px master icon
 ├── AppIcon.icns             # Multi-resolution macOS squircle icon
+├── Echo.iconset/            # Generated icon sizes packed into AppIcon.icns
+├── build_app_icon.swift     # Renders the squircle icon + iconset from the source
+├── make_icns.py             # Packs Echo.iconset into AppIcon.icns
 ├── Package.swift            # Swift package definition
 ├── ARCHITECTURE.md          # Systems architecture deep dive
 ├── ROADMAP.md               # Product roadmap and feature milestones
@@ -179,6 +184,21 @@ swiftc -O -parse-as-library \
   Sources/Echo/*.swift Sources/Echo/*/*.swift Sources/Echo/*/*/*.swift \
   -o echo-app
 ```
+
+### Regenerating the App Icon
+
+The icon is generated from `AppIconSource.png` (1024×1024) so it can be
+rebuilt without design tools:
+
+```bash
+# Renders AppIcon-1024.png and Echo.iconset/ (824pt squircle, 100pt margins)
+swift build_app_icon.swift
+
+# Packs the iconset into a multi-resolution AppIcon.icns
+python3 make_icns.py
+```
+
+Pass a different artwork path with `swift build_app_icon.swift path/to/art.png`.
 
 ### Packaging & Code Signing
 

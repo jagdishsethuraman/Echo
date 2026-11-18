@@ -5,11 +5,12 @@ public final class FloatingPillPanel: NSPanel {
     private let stateModel: PillStateObservable
     private var dismissTimer: Timer?
     public var onStopRequested: (() -> Void)?
+    private var lastTargetWidth: CGFloat = 360
     
     public init() {
         self.stateModel = PillStateObservable()
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 46),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 52),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -20,6 +21,7 @@ public final class FloatingPillPanel: NSPanel {
         self.isOpaque = false
         self.backgroundColor = .clear
         self.hasShadow = false
+        self.appearance = NSAppearance(named: .darkAqua)
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         self.isMovableByWindowBackground = false
         
@@ -59,8 +61,23 @@ public final class FloatingPillPanel: NSPanel {
     }
     
     public func updateState(_ state: PillState) {
+        let oldState = stateModel.state
         stateModel.state = state
-        reposition(for: state, animate: true)
+        
+        // Only trigger reposition if the structural layout changed (e.g. state type, lock toggle, or broad text bucket)
+        let needsReposition: Bool
+        switch (oldState, state) {
+        case (.listening(_, _, let oldLocked, _), .listening(_, _, let newLocked, _)):
+            let oldW = targetWidth(for: oldState)
+            let newW = targetWidth(for: state)
+            needsReposition = oldLocked != newLocked || abs(oldW - newW) >= 24
+        default:
+            needsReposition = true
+        }
+        
+        if needsReposition {
+            reposition(for: state, animate: true)
+        }
         
         switch state {
         case .success, .error:
@@ -92,24 +109,25 @@ public final class FloatingPillPanel: NSPanel {
     private func targetWidth(for state: PillState) -> CGFloat {
         switch state {
         case .idle:
-            return 220
+            return 240
         case .listening(_, let livePartial, let isLocked, _):
-            let lockBonus: CGFloat = isLocked ? 60 : 0
-            let controlsPadding: CGFloat = 175 + lockBonus // dot + waveform + timer + stop button
+            let baseWidth: CGFloat = isLocked ? 380 : 340
             if livePartial.isEmpty {
-                return max(320, controlsPadding + 140)
+                return baseWidth
             } else {
-                let estTextWidth = CGFloat(livePartial.count) * 7.5
-                return min(740, max(320, estTextWidth + controlsPadding))
+                // Quantize text width in 40pt buckets to avoid flutter on every letter
+                let rawWidth = baseWidth + CGFloat(livePartial.count) * 7.0
+                let quantized = ceil(rawWidth / 40.0) * 40.0
+                return min(620, max(baseWidth, quantized))
             }
         case .transcribing:
-            return 260
+            return 280
         case .success(let preview):
-            let estTextWidth = CGFloat(preview.count) * 7.2
-            return min(640, max(280, estTextWidth + 90))
-        case .error(let msg):
-            let estTextWidth = CGFloat(msg.count) * 7.2
-            return min(580, max(280, estTextWidth + 90))
+            let rawWidth = 280 + CGFloat(preview.count) * 6.5
+            let quantized = ceil(rawWidth / 30.0) * 30.0
+            return min(560, max(280, quantized))
+        case .error:
+            return 360
         }
     }
     
@@ -118,16 +136,25 @@ public final class FloatingPillPanel: NSPanel {
         
         let screenRect = screen.visibleFrame
         let panelW: CGFloat = targetWidth(for: state)
-        let panelH: CGFloat = 46
+        let panelH: CGFloat = 52
         
-        // Bottom-Center screen positioning: 28px above Dock / taskbar
-        let x = screenRect.midX - (panelW / 2)
-        let y = screenRect.minY + 28
+        // Bottom-Center screen positioning: keep the 38pt pill 30px above the Dock
+        let x = round(screenRect.midX - (panelW / 2))
+        let y = round(screenRect.minY + 24)
         let targetFrame = NSRect(x: x, y: y, width: panelW, height: panelH)
+        
+        // Prevent re-animating if already at position (eliminates jitter and oscillations)
+        if abs(self.frame.origin.x - targetFrame.origin.x) < 1.0 &&
+           abs(self.frame.size.width - targetFrame.size.width) < 1.0 &&
+           abs(self.frame.origin.y - targetFrame.origin.y) < 1.0 {
+            return
+        }
+        
+        lastTargetWidth = panelW
         
         if animate {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
+                context.duration = 0.20
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 self.animator().setFrame(targetFrame, display: true)
             }
