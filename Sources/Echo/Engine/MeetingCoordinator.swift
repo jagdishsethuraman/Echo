@@ -12,6 +12,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     @Published public var activeSession: MeetingSession?
     @Published public var micLevel: Float = 0.0
     @Published public var systemLevel: Float = 0.0
+    @Published public var captureError: String? = nil
     
     private let callbackLock = NSLock()
     private var _onSessionUpdated: ((MeetingSession) -> Void)?
@@ -29,6 +30,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     private var audioPipelineActive = false
     private var micBufferToken: UUID?
     private var systemBufferToken: UUID?
+    private var audioErrorToken: UUID?
     
     public init(
         dualChannel: DualChannelCoordinator = DualChannelCoordinator(),
@@ -93,11 +95,18 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             let level = AudioBufferConverter.calculateRMS(from: converted)
             self.systemVAD.processChunk(pcmData: pcmData, rmsEnergy: level)
         }
+        
+        audioErrorToken = dualChannel.hub.addErrorObserver { [weak self] error in
+            DispatchQueue.main.async {
+                self?.captureError = error.localizedDescription
+            }
+        }
     }
     
     deinit {
         if let micBufferToken { dualChannel.hub.removeObserver(micBufferToken) }
         if let systemBufferToken { dualChannel.hub.removeObserver(systemBufferToken) }
+        if let audioErrorToken { dualChannel.hub.removeObserver(audioErrorToken) }
     }
     
     private func setupVADHandlers() {
@@ -185,6 +194,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         let session = MeetingSession(title: title, startTime: Date())
         await MainActor.run {
             self.activeSession = session
+            self.captureError = nil
         }
         onSessionUpdated?(session)
         database.saveSession(session)
@@ -194,7 +204,11 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             try await dualChannel.startMeetingCapture()
         } catch {
             setAudioPipelineActive(false)
+            await MainActor.run {
+                self.captureError = error.localizedDescription
+            }
             print("  ℹ Audio device capture notice: \(error.localizedDescription)")
+            throw error
         }
     }
     

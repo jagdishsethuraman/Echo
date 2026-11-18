@@ -136,6 +136,7 @@ public final class AudioHub: @unchecked Sendable {
             try micEngine.startCapture()
         } catch {
             _ = dropMicRetainCount()
+            broadcastError(error)
             throw error
         }
     }
@@ -156,6 +157,7 @@ public final class AudioHub: @unchecked Sendable {
             try await systemCapture.startCapture()
         } catch {
             _ = dropSystemRetainCount()
+            broadcastError(error)
             throw error
         }
     }

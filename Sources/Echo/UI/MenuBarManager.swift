@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ApplicationServices
+import AVFoundation
 
 @MainActor
 public final class MenuBarManager: NSObject, NSMenuDelegate {
@@ -126,6 +127,13 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         axItem.target = self
         menu.addItem(axItem)
         
+        // Microphone Permission Status
+        let isMicGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let micTitle = isMicGranted ? "Microphone Access: Granted" : "Microphone Access: Not Granted…"
+        let micItem = NSMenuItem(title: micTitle, action: #selector(openMicrophoneSettings), keyEquivalent: "")
+        micItem.target = self
+        menu.addItem(micItem)
+        
         menu.addItem(NSMenuItem.separator())
         
         // Open Meeting Studio Window
@@ -199,6 +207,12 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
     @objc private func openAccessibility() {
         Task { @MainActor in
             coordinator.openAccessibilitySettings()
+        }
+    }
+    
+    @objc private func openMicrophoneSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+            NSWorkspace.shared.open(url)
         }
     }
     

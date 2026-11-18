@@ -32,7 +32,7 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | ✅ Fixed |
 | INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | Open |
 | INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | Open |
-| INJ-04 | P2 | UX | No feedback when microphone or system-audio capture fails; `statusMessage` is never rendered | Open |
+| INJ-04 | P2 | UX | No feedback when microphone or system-audio capture fails; `statusMessage` is never rendered | ✅ Fixed |
 | UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | ✅ Fixed |
 | UX-02 | P2 | Performance | Entire Studio view invalidates at audio rate (~43 Hz) | Open |
 | UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | ✅ Fixed |
@@ -294,7 +294,9 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### INJ-04 · Silent audio failures; unused status surface
 
-**Where:** `Sources/Echo/AppCoordinator.swift:151`, `:19`, `Sources/Echo/UI/MeetingStudio/MeetingStudioView.swift:109`
+**Status:** ✅ Fixed. Added explicit `AVCaptureDevice` permission validation and request; wired `AudioHub.addErrorObserver` across `AppCoordinator` and `MeetingCoordinator`; rendered live `captureErrorBanner` and `microphoneBanner` in `MeetingStudioView`; rendered `statusMessage` live in Studio title bar and Menu Bar; and added automatic AX/mic permission refresh on `NSApplication.didBecomeActiveNotification`.
+
+**Where:** `Sources/Echo/AppCoordinator.swift`, `Sources/Echo/Engine/MeetingCoordinator.swift`, `Sources/Echo/UI/MeetingStudio/MeetingStudioView.swift`, `Sources/Echo/UI/MenuBarManager.swift`
 
 `try? micEngine.startCapture()` swallows permission and device errors, so the HUD says "Listening" while capturing nothing. `statusMessage` is published but never rendered. The accessibility banner recomputes `AXIsProcessTrusted()` in `body`, so it doesn't refresh when permission changes.
 

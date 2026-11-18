@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 
 @MainActor
@@ -32,6 +33,7 @@ public final class AppCoordinator: ObservableObject {
     private let dictationCaptureActive = CaptureFlag()
     private var micLevelToken: UUID?
     private var micBufferToken: UUID?
+    private var audioErrorToken: UUID?
     /// Byte count at the last partial attempt, used to skip decodes when no
     /// new audio has arrived since the previous partial.
     private var lastPartialByteCount: Int = 0
@@ -67,6 +69,19 @@ public final class AppCoordinator: ObservableObject {
         setupHotkeyWiring()
         setupMicWiring()
         setupPillWiring()
+        setupAudioErrorWiring()
+    }
+    
+    private func setupAudioErrorWiring() {
+        audioErrorToken = audioHub.addErrorObserver { [weak self] error in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.statusMessage = "Audio error: \(error.localizedDescription)"
+                if self.isDictating {
+                    self.floatingPill.updateState(.error(message: error.localizedDescription))
+                }
+            }
+        }
     }
     
     private func setupPillWiring() {
@@ -153,6 +168,14 @@ public final class AppCoordinator: ObservableObject {
     
     public func startDictation() {
         guard !isDictating else { return }
+        
+        let authStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        if authStatus == .denied || authStatus == .restricted {
+            floatingPill.show(state: .error(message: "Microphone access denied in System Settings"))
+            statusMessage = "Microphone access denied in System Settings"
+            return
+        }
+        
         isDictating = true
         statusMessage = "Listening..."
         currentLivePartial = ""

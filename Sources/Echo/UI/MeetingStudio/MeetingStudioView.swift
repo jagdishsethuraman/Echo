@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ApplicationServices
+import AVFoundation
 
 public struct ActionItemState: Identifiable, Sendable {
     public let id: UUID
@@ -24,6 +25,8 @@ public struct MeetingStudioView: View {
     public var onExportMarkdown: (() -> Void)?
 
     @ObservedObject var memoryState = WordMemoryState.shared
+    @ObservedObject var coordinator = AppCoordinator.shared
+    @ObservedObject var meetingCoordinator = AppCoordinator.shared.meetingCoordinator
 
     @State private var searchFilter: String = ""
     @State private var showNotesCopied: Bool = false
@@ -31,6 +34,8 @@ public struct MeetingStudioView: View {
     @State private var isAddingActionItem: Bool = false
     @FocusState private var isSearchFocused: Bool
     @State private var actionItems: [ActionItemState] = []
+    @State private var isAccessibilityTrusted: Bool = AXIsProcessTrusted()
+    @State private var isMicrophoneAuthorized: Bool = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
 
     public init(
         session: MeetingSession,
@@ -99,6 +104,11 @@ public struct MeetingStudioView: View {
         newActionText = ""
     }
 
+    private func refreshPermissions() {
+        isAccessibilityTrusted = AXIsProcessTrusted()
+        isMicrophoneAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
     // MARK: - Body
 
     public var body: some View {
@@ -110,8 +120,16 @@ public struct MeetingStudioView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            if !AXIsProcessTrusted() {
+            if !isMicrophoneAuthorized {
+                microphoneBanner
+            }
+
+            if !isAccessibilityTrusted {
                 permissionBanner
+            }
+
+            if let error = meetingCoordinator.captureError {
+                captureErrorBanner(error)
             }
 
             Divider()
@@ -133,7 +151,11 @@ public struct MeetingStudioView: View {
         .preferredColorScheme(.dark)
         .frame(minWidth: 840, minHeight: 560)
         .onAppear {
+            refreshPermissions()
             syncActionItems()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissions()
         }
         .onChange(of: session.segments) {
             syncActionItems()
@@ -154,10 +176,19 @@ public struct MeetingStudioView: View {
 
                     statusBadge
                 }
-                Text(session.title)
-                    .font(EchoFont.caption)
-                    .foregroundStyle(EchoTheme.textSecondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(session.title)
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textSecondary)
+                        .lineLimit(1)
+                    Text("·")
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textFaint)
+                    Text(coordinator.statusMessage)
+                        .font(EchoFont.caption)
+                        .foregroundStyle(EchoTheme.textMuted)
+                        .lineLimit(1)
+                }
             }
 
             Spacer(minLength: 12)
@@ -311,6 +342,72 @@ public struct MeetingStudioView: View {
         .background(EchoTheme.accent.opacity(0.055))
         .overlay(alignment: .bottom) {
             Rectangle().fill(EchoTheme.separator).frame(height: 1)
+        }
+    }
+
+    private var microphoneBanner: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "mic.slash.fill")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(EchoTheme.recordingRed)
+
+            Text("Microphone access is off")
+                .font(EchoFont.captionMedium)
+                .foregroundStyle(EchoTheme.textPrimary)
+
+            Text("Echo cannot capture audio until microphone permission is granted in Settings.")
+                .font(EchoFont.caption)
+                .foregroundStyle(EchoTheme.textSecondary)
+
+            Spacer(minLength: 8)
+
+            Button("Open System Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .buttonStyle(LinkButtonStyle())
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 34)
+        .background(EchoTheme.recordingRed.opacity(0.10))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(EchoTheme.recordingRed.opacity(0.25)).frame(height: 1)
+        }
+    }
+
+    private func captureErrorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(EchoTheme.recordingRed)
+
+            Text("Audio Capture Notice:")
+                .font(EchoFont.captionMedium)
+                .foregroundStyle(EchoTheme.recordingRed)
+
+            Text(message)
+                .font(EchoFont.caption)
+                .foregroundStyle(EchoTheme.textSecondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Button {
+                meetingCoordinator.captureError = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(EchoTheme.textSecondary)
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 34)
+        .background(EchoTheme.recordingRed.opacity(0.10))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(EchoTheme.recordingRed.opacity(0.25)).frame(height: 1)
         }
     }
 
