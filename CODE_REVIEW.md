@@ -39,8 +39,8 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | UX-04 | P2 | Lifecycle | No graceful shutdown: audio not stopped, session `endTime` not written, temp files left behind | Open |
 | SEC-01 | P2 | Privacy | Sensitive WAVs are written to world-readable `/tmp` and may survive crashes | Open |
 | UX-05 | P2 | UX | "Export All Notes" exports only the active session | Open |
-| SEC-02 | P3 | Permissions | AppleScript fallback triggers Automation TCC but the bundle lacks `NSAppleEventsUsageDescription` | Open |
-| BUILD-01 | P3 | Reproducibility | `Info.plist` and bundle assembly are not in version control | Open |
+| SEC-02 | P3 | Permissions | AppleScript fallback triggers Automation TCC but the bundle lacks `NSAppleEventsUsageDescription` | ✅ Fixed |
+| BUILD-01 | P3 | Reproducibility | `Info.plist` and bundle assembly are not in version control | ✅ Fixed |
 | BUILD-02 | P3 | Distribution | `codesign --deep` guidance; no hardened runtime or notarization | Open |
 | BUILD-03 | P3 | Cleanup | Dead code: `PhononClient`, `BenchmarkResult`, unused enum case, unused field | Open |
 | BUILD-04 | P3 | Performance | `FERMION_DEVICE=cpu` contradicts documented Metal/MLX acceleration | Open |

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>Echo</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ragavij.echo</string>
+    <key>CFBundleName</key>
+    <string>Echo</string>
+    <key>CFBundleDisplayName</key>
+    <string>Echo</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.3.0</string>
+    <key>CFBundleVersion</key>
+    <string>1.3.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Echo requires microphone access to transcribe your speech locally using Phonon-2.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Echo requires system audio loopback capture via ScreenCaptureKit to transcribe meeting attendees.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Echo requires AppleEvents permission to automatically paste transcribed text into your focused application.</string>
+</dict>
+</plist>

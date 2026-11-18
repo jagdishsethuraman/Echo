@@ -7,18 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.3.0] - 2026-11-18
 
 ### Changed
-- **Shared audio hub:** Dictation and meeting capture now share one `AudioEngineManager` through a reference-counted `AudioHub` instead of opening two taps on the same microphone. Buffers and meters fan out to multiple observers, so one consumer can no longer silently replace another.
-- **Bounded transcription queue:** Meeting segments are transcribed through `TranscriptionService` with a single in-flight engine process (configurable) instead of one unbounded `fermion` process per VAD segment. `stopSession()` now waits (up to 5 s) for the queue to drain before writing `endTime`, so the final utterance is included in the session and export.
-- **VAD pre-roll:** The detector keeps a configurable 300 ms pre-roll buffer and prepends it when speech starts, preventing clipped word onsets. Segment callbacks are now delivered synchronously so shutdown can observe the final segment.
+- **Shared audio hub (`AUD-02`, `AUD-03`):** Dictation and meeting capture now share one `AudioEngineManager` through a reference-counted `AudioHub` instead of opening two taps on the same microphone. Buffers and meters fan out to multiple observers, so one consumer can no longer silently replace another.
+- **Bounded transcription queue (`ENG-02`, `AUD-05`):** Meeting segments are transcribed through `TranscriptionService` with a single in-flight engine process (configurable) instead of one unbounded `fermion` process per VAD segment. `stopSession()` now waits (up to 5 s) for the queue to drain before writing `endTime`, so the final utterance is included in the session and export.
+- **VAD pre-roll (`AUD-04`):** The detector keeps a configurable 300 ms pre-roll buffer and prepends it when speech starts, preventing clipped word onsets. Segment callbacks are now delivered synchronously so shutdown can observe the final segment.
 - **Native "Graphite Frost" interface:** Replaced the black/brass/lavender theme with a neutral frosted graphite palette, a cool frost-blue primary accent, and a sea-glass secondary accent. Typography now uses SF Pro with monospaced digits only where telemetry benefits from them.
 - **Meeting Studio redesign:** The window now uses real `NSVisualEffectView` vibrancy with a dark appearance, hidden titlebar, autosaved frame, and a unified toolbar-style header showing the session title, recording state, input meters, word memory, and record control. The accessibility notice is a quiet inline banner instead of an amber warning strip.
 - **Transcript & Notes:** Transcript rows use native list spacing with speaker avatars, hover-to-copy, and subtle selection; the notes inspector has frosted cards, action-item progress (`2/4`), and a pinned accent export button.
 - **HUD & menu bar:** The floating pill shares the graphite glass treatment with the frost-blue waveform. The menu-bar item uses SF Symbols for idle, dictating, and recording states, and menu copy was shortened to match macOS conventions.
 - **App icon:** Replaced the old icon with the elk artwork, rebuilt on Apple's 824pt squircle grid with a soft dock shadow and hairline rim. The source, 1024px master, iconset, and regeneration scripts now live in the repo.
 - **Developer tooling:** Debug builds accept `Echo --snapshot <directory>` to render PNGs of the studio and HUD, and Xcode `#Preview`s cover both surfaces for design iteration.
+- **Reproducible build pipeline (`BUILD-01`):** Added version-controlled `Info.plist` and `assemble_app.sh` script for clean, reproducible release bundling and signing.
 
 ### Fixed
 - **System-audio VU meter & capture error notifications (`AUD-06`):** ScreenCaptureKit sample buffers are now decoded to canonical 16 kHz Float32 PCM using `AudioBufferConverter.pcmBuffer` and `calculateRMS` rather than assuming raw Int16. Capture errors trigger `onCaptureFailed` and fan out through `AudioHub.addErrorObserver`.
@@ -26,9 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQLite schema hardening & lifecycle management (`DATA-02`):** Configured 3-second busy timeout (`PRAGMA busy_timeout = 3000; sqlite3_busy_timeout`), enforced foreign key constraints (`PRAGMA foreign_keys = ON`), added `ON DELETE CASCADE` from utterances to sessions, implemented `user_version` schema migration tracking, added `deleteSession()`, WAL checkpointing, and background `dbQueue` async methods.
 - **Product model separation & session restore (`DATA-01`):** Startup no longer resurrects closed sessions (`endTime != nil`) as active recording streams. Quick dictations while not in a meeting are preserved in the standalone SQLite dictations log rather than polluting meeting sessions.
 - **Concurrency hardening (`CORE-01`):** Added lock-synchronized callback closures in `SystemAudioCapture`, `AudioEngineManager`, and `MeetingCoordinator` to prevent cross-queue races; marked `WordMemoryState` with `@MainActor`.
+- **Automation TCC declaration (`SEC-02`):** Added `NSAppleEventsUsageDescription` in `Info.plist` to declare AppleEvents usage for universal synthetic paste injection.
 - **Safe SQLite database fallback:** Added graceful `NSTemporaryDirectory()` fallback in `DatabaseManager` ensuring tables are created and operations proceed even under restricted sandbox permissions.
-- **Accessibility injection safety:** Guarded `focusedElement` with `CFGetTypeID` against unexpected CFTypes before casting to `AXUIElement` (`CORE-03`).
-- **Eliminated double SwiftUI invalidation:** Removed redundant manual `objectWillChange.send()` calls when mutating `@Published` properties (`CORE-02`).
+- **Accessibility injection safety (`CORE-03`):** Guarded `focusedElement` with `CFGetTypeID` against unexpected CFTypes before casting to `AXUIElement`.
+- **Eliminated double SwiftUI invalidation (`CORE-02`):** Removed redundant manual `objectWillChange.send()` calls when mutating `@Published` properties.
 
 ---
 
