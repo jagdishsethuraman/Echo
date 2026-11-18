@@ -78,7 +78,18 @@ public final class DatabaseManager: @unchecked Sendable {
             sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
             print("Echo DatabaseManager: Initialized at fallback: \(fallbackPath)")
         } else {
-            print("Echo DatabaseManager: Failed to open SQLite DB at \(dbPath) or \(fallbackPath)")
+            if let db = db {
+                sqlite3_close(db)
+                self.db = nil
+            }
+            let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("echo.sqlite").path
+            if sqlite3_open(tempPath, &db) == SQLITE_OK {
+                sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
+                sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
+                print("Echo DatabaseManager: Initialized at temp fallback: \(tempPath)")
+            } else {
+                print("Echo DatabaseManager: Failed to open SQLite DB at \(dbPath) or \(fallbackPath)")
+            }
         }
     }
     

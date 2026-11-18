@@ -17,17 +17,17 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | ENG-01 | P0 | Reliability | Process runner can deadlock, has no timeout, and blocks a cooperative thread | ✅ Fixed |
 | QLT-01 | P0 | Testing | `Tests/` is empty; harnesses are root scripts and `--test` always prints PASSED | ✅ Fixed |
 | CFG-01 | P0 | Portability | Hardcoded `/Users/ragavij/...` paths for the engine, DB fallback, and export folder | ✅ Fixed |
-| AUD-02 | P1 | Architecture | Two independent `AVAudioEngine`s contend for the microphone | Open |
-| AUD-03 | P1 | Architecture | Audio/event callbacks are single-consumer closures and silently overwrite each other | Open |
-| AUD-04 | P1 | Quality | VAD has no pre-roll, so word onsets are clipped | Open |
-| AUD-05 | P1 | Correctness | `stopSession()` returns before flushed audio is transcribed | Open |
+| AUD-02 | P1 | Architecture | Two independent `AVAudioEngine`s contend for the microphone | ✅ Fixed |
+| AUD-03 | P1 | Architecture | Audio/event callbacks are single-consumer closures and silently overwrite each other | ✅ Fixed |
+| AUD-04 | P1 | Quality | VAD has no pre-roll, so word onsets are clipped | ✅ Fixed |
+| AUD-05 | P1 | Correctness | `stopSession()` returns before flushed audio is transcribed | ✅ Fixed |
 | AUD-06 | P1 | Quality | System-audio meter assumes Int16; capture failures stop silently | Open |
-| ENG-02 | P1 | Performance | Unbounded concurrent `fermion` processes per segment | Open |
+| ENG-02 | P1 | Performance | Unbounded concurrent `fermion` processes per segment | ✅ Fixed |
 | DATA-01 | P1 | Product model | Quick dictations are appended to the active meeting; startup restores yesterday's session | Open |
 | DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | Open |
 | CORE-01 | P1 | Concurrency | Pervasive `@unchecked Sendable`; no strict-concurrency checking | Open |
-| CORE-02 | P1 | SwiftUI | `objectWillChange.send()` before mutating `@Published` causes double invalidation | Open |
-| CORE-03 | P1 | Safety | Force-cast `focusedElement as! AXUIElement` in the injection path | Open |
+| CORE-02 | P1 | SwiftUI | `objectWillChange.send()` before mutating `@Published` causes double invalidation | ✅ Fixed |
+| CORE-03 | P1 | Safety | Force-cast `focusedElement as! AXUIElement` in the injection path | ✅ Fixed |
 | LEX-01 | P1 | Text quality | Sanitizer can cascade, breaks on `$`/`\` replacements, ASCII-only boundaries, no regex cache | Open |
 | INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | Open |
 | INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | Open |
@@ -136,6 +136,8 @@ let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile() // on a backg
 
 ### AUD-02 · Two audio engines on one microphone
 
+**Status:** ✅ Fixed. `AudioHub` owns the single `AudioEngineManager`; dictation and meetings retain/release the same engine.
+
 **Where:** `Sources/Echo/AppCoordinator.swift:42`, `Sources/Echo/Audio/DualChannelCoordinator.swift:41-46`
 
 Dictation owns one `AudioEngineManager`; the meeting coordinator creates another. During a meeting, push-to-talk opens a second `AVAudioEngine` and tap on the same input device — duplicated capture, conversion, CPU, and possible device contention.
@@ -144,6 +146,8 @@ Dictation owns one `AudioEngineManager`; the meeting coordinator creates another
 
 ### AUD-03 · Single-consumer callback closures
 
+**Status:** ✅ Fixed. `AudioHub` fans buffers and levels out to token-addressed observers.
+
 **Where:** `Sources/Echo/Audio/AudioEngineManager.swift:11-12`, `Sources/Echo/Audio/SystemAudioCapture.swift:10-11`, `Sources/Echo/Audio/DualChannelCoordinator.swift:51-69`
 
 `onAudioBuffer`, `onVolumeLevel`, etc. are one closure each. A second consumer silently replaces the first — exactly how the VAD wiring stayed invisible for so long.
@@ -151,6 +155,8 @@ Dictation owns one `AudioEngineManager`; the meeting coordinator creates another
 **Fix:** a small multicast fan-out (`AsyncStream`, observer array, or Combine subject) with removal tokens, and tests that assert all subscribers receive data.
 
 ### AUD-04 · VAD clips word onsets
+
+**Status:** ✅ Fixed. `VoiceActivityDetector` keeps a 300 ms pre-roll (`preRollSeconds`) and prepends it when speech starts.
 
 **Where:** `Sources/Echo/Audio/VoiceActivityDetector.swift:39-64`
 
@@ -213,7 +219,9 @@ The annotation is used to silence the compiler rather than to document a real gu
 
 ### CORE-02 · Double SwiftUI invalidation
 
-**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:117`, `:138`, `:166`, `:200`
+**Status:** ✅ Fixed. Removed redundant manual `objectWillChange.send()` calls; `@Published` property wrapper handles notification.
+
+**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:134`, `:156`, `:178`
 
 Calling `objectWillChange.send()` before mutating an `@Published` property sends two change notifications and can render a half-updated state.
 
@@ -221,11 +229,13 @@ Calling `objectWillChange.send()` before mutating an `@Published` property sends
 
 ### CORE-03 · Force-cast on the accessibility element
 
-**Where:** `Sources/Echo/Injection/TextInjector.swift:281`
+**Status:** ✅ Fixed. Guarded with `CFGetTypeID(focusedElement) == AXUIElementGetTypeID()` before casting.
+
+**Where:** `Sources/Echo/Injection/TextInjector.swift:280-284`
 
 `focusedElement as! AXUIElement` will crash if the AX server returns an unexpected CFType. A misbehaving or malicious app should not be able to crash Echo.
 
-**Fix:** `guard let element = focusedElement as? AXUIElement else { return false }`.
+**Fix:** `guard CFGetTypeID(focusedElement) == AXUIElementGetTypeID() else { return false }`.
 
 ### LEX-01 · Word-memory replacement edge cases
 

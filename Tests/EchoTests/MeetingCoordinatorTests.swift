@@ -102,4 +102,32 @@ struct MeetingCoordinatorTests {
         coordinator.appendDictation(text: "notify me")
         #expect(received == ["notify me"])
     }
+    
+    @Test @MainActor func stopSessionWaitsForInFlightTranscriptions() async {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo-meeting-drain-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { remove(directory) }
+        
+        let database = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
+        let service = TranscriptionService(engine: { _ in
+            try await Task.sleep(for: .milliseconds(80))
+            return "final line"
+        })
+        let coordinator = MeetingCoordinator(
+            phononRunner: PhononProcessRunner(fermionPath: "/usr/bin/true"),
+            database: database,
+            transcriptionService: service
+        )
+        
+        coordinator.enqueueSegment(
+            track: .you,
+            pcmData: Data(repeating: 1, count: 3_200),
+            duration: 0.1
+        )
+        
+        let session = await coordinator.stopSession()
+        
+        #expect(session?.segments.compactMap(\.text) == ["final line"])
+    }
 }

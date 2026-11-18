@@ -7,6 +7,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     public let micVAD: VoiceActivityDetector
     public let systemVAD: VoiceActivityDetector
     private let database: DatabaseManager
+    private let transcriptionService: TranscriptionService
     
     @Published public var activeSession: MeetingSession?
     @Published public var micLevel: Float = 0.0
@@ -15,21 +16,25 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     public var onSessionUpdated: ((MeetingSession) -> Void)?
     
     private let sessionQueue = DispatchQueue(label: "com.echo.meeting.session")
-    private let tempDir = FileManager.default.temporaryDirectory
     
     /// Guards the audio pipeline flag because the callbacks fire on the audio
     /// and ScreenCaptureKit sample queues, while start/stop happen on the main actor.
     private let pipelineLock = NSLock()
     private var audioPipelineActive = false
+    private var micBufferToken: UUID?
+    private var systemBufferToken: UUID?
     
     public init(
         dualChannel: DualChannelCoordinator = DualChannelCoordinator(),
         phononRunner: PhononProcessRunner = PhononProcessRunner(),
-        database: DatabaseManager = .shared
+        database: DatabaseManager = .shared,
+        transcriptionService: TranscriptionService? = nil
     ) {
         self.dualChannel = dualChannel
         self.phononRunner = phononRunner
         self.database = database
+        self.transcriptionService = transcriptionService
+            ?? TranscriptionService(runner: phononRunner)
         self.micVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         self.systemVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         
@@ -62,7 +67,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     /// Feed the two VADs with canonical 16 kHz mono Int16 PCM.
     private func setupAudioPipelines() {
         // Microphone: `AudioEngineManager` already delivers 16 kHz mono Float32.
-        dualChannel.micEngine.onAudioBuffer = { [weak self] buffer in
+        micBufferToken = dualChannel.hub.addMicBufferObserver { [weak self] buffer in
             guard let self = self, self.isAudioPipelineActive else { return }
             guard let pcmData = AudioBufferConverter.int16PCM(from: buffer) else { return }
             let level = AudioBufferConverter.calculateRMS(from: buffer)
@@ -71,7 +76,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         
         // System loopback: ScreenCaptureKit hands us raw CMSampleBuffers that
         // must be decoded and resampled before the VAD can slice them.
-        dualChannel.systemCapture.onSystemAudioBuffer = { [weak self] sampleBuffer in
+        systemBufferToken = dualChannel.hub.addSystemBufferObserver { [weak self] sampleBuffer in
             guard let self = self, self.isAudioPipelineActive else { return }
             guard let converted = AudioBufferConverter.pcmBuffer(from: sampleBuffer),
                   let pcmData = AudioBufferConverter.int16PCM(from: converted) else {
@@ -80,6 +85,11 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             let level = AudioBufferConverter.calculateRMS(from: converted)
             self.systemVAD.processChunk(pcmData: pcmData, rmsEnergy: level)
         }
+    }
+    
+    deinit {
+        if let micBufferToken { dualChannel.hub.removeObserver(micBufferToken) }
+        if let systemBufferToken { dualChannel.hub.removeObserver(systemBufferToken) }
     }
     
     private func setupVADHandlers() {
@@ -91,14 +101,44 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         }
         
         micVAD.onSpeechSegmentCompleted = { [weak self] pcmData, duration in
-            Task {
-                await self?.processSpeechSegment(track: .you, pcmData: pcmData, duration: duration)
-            }
+            self?.enqueueSegment(track: .you, pcmData: pcmData, duration: duration)
         }
         
         systemVAD.onSpeechSegmentCompleted = { [weak self] pcmData, duration in
-            Task {
-                await self?.processSpeechSegment(track: .meeting, pcmData: pcmData, duration: duration)
+            self?.enqueueSegment(track: .meeting, pcmData: pcmData, duration: duration)
+        }
+    }
+    
+    /// Register a VAD segment with the bounded transcription queue.
+    ///
+    /// The segment callback is synchronous, so `stopSession()` can be sure the
+    /// final utterance is already counted before it waits for the queue to
+    /// drain.
+    func enqueueSegment(track: SpeakerTrack, pcmData: Data, duration: Double) {
+        transcriptionService.submit(pcmData: pcmData) { [weak self] text in
+            guard let self, let text, !text.isEmpty else { return }
+            let sanitized = WordMemoryEngine.shared.sanitize(text)
+            await self.appendTranscribedSegment(track: track, text: sanitized, duration: duration)
+        }
+    }
+    
+    private func appendTranscribedSegment(track: SpeakerTrack, text: String, duration: Double) async {
+        let segment = TranscriptSegment(
+            speaker: track,
+            timestamp: Date(),
+            text: text,
+            durationSeconds: duration
+        )
+        
+        await MainActor.run {
+            if self.activeSession == nil {
+                self.activeSession = MeetingSession(title: "Echo Meeting Session", startTime: Date())
+            }
+            self.activeSession?.segments.append(segment)
+            if let s = self.activeSession {
+                self.onSessionUpdated?(s)
+                self.database.saveSession(s)
+                self.database.saveUtterance(segment, sessionId: s.id, isDictation: false)
             }
         }
     }
@@ -117,7 +157,6 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
                 self.activeSession = MeetingSession(title: "Echo Speech Stream", startTime: Date())
             }
             self.activeSession?.segments.append(segment)
-            self.objectWillChange.send()
             if let s = self.activeSession {
                 self.onSessionUpdated?(s)
                 // Persist to local SQLite backend
@@ -138,7 +177,6 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         let session = MeetingSession(title: title, startTime: Date())
         await MainActor.run {
             self.activeSession = session
-            self.objectWillChange.send()
         }
         onSessionUpdated?(session)
         database.saveSession(session)
@@ -155,12 +193,20 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     /// Stop current meeting session and finalize
     public func stopSession() async -> MeetingSession? {
         // Stop feeding new audio before flushing, so nothing is appended after
-        // the flush emits the final segment.
+        // the flush emits the final segment. `flush()` delivers its callback
+        // synchronously, which registers the final segment with the queue.
         setAudioPipelineActive(false)
         micVAD.flush()
         systemVAD.flush()
         
         await dualChannel.stopMeetingCapture()
+        
+        // Wait for the final utterances to be transcribed and appended before
+        // writing `endTime` or exporting the session.
+        let drained = await transcriptionService.waitUntilIdle(timeout: 5)
+        if !drained {
+            print("  ⚠ Meeting stopped with transcriptions still in flight")
+        }
         
         return await MainActor.run {
             guard var session = self.activeSession else { return nil }
@@ -174,41 +220,14 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     
     /// Transcribe a segmented chunk and append to session timeline
     public func processSpeechSegment(track: SpeakerTrack, pcmData: Data, duration: Double) async {
-        let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
-        
-        let tempFile = tempDir.appendingPathComponent("echo_segment_\(UUID().uuidString).wav")
         do {
-            try wavData.write(to: tempFile)
-            let (text, _) = try await phononRunner.transcribe(fileURL: tempFile)
-            try? FileManager.default.removeItem(at: tempFile)
-            
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
+            let text = try await transcriptionService.transcribe(pcmData: pcmData)
+            guard !text.isEmpty else { return }
             
             // Apply learned word memory & custom vocabulary
-            let sanitized = WordMemoryEngine.shared.sanitize(trimmed)
-            
-            let segment = TranscriptSegment(
-                speaker: track,
-                timestamp: Date(),
-                text: sanitized,
-                durationSeconds: duration
-            )
-            
-            await MainActor.run {
-                if self.activeSession == nil {
-                    self.activeSession = MeetingSession(title: "Echo Meeting Session", startTime: Date())
-                }
-                self.activeSession?.segments.append(segment)
-                self.objectWillChange.send()
-                if let s = self.activeSession {
-                    self.onSessionUpdated?(s)
-                    self.database.saveSession(s)
-                    self.database.saveUtterance(segment, sessionId: s.id, isDictation: false)
-                }
-            }
+            let sanitized = WordMemoryEngine.shared.sanitize(text)
+            await appendTranscribedSegment(track: track, text: sanitized, duration: duration)
         } catch {
-            try? FileManager.default.removeItem(at: tempFile)
             print("  ⚠ VAD chunk transcription error: \(error.localizedDescription)")
         }
     }

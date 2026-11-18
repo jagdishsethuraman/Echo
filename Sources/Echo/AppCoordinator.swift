@@ -10,6 +10,7 @@ public final class AppCoordinator: ObservableObject {
     public let textInjector: TextInjector
     public let hotkeyManager: HotkeyManager
     public let floatingPill: FloatingPillPanel
+    public let audioHub: AudioHub
     public let micEngine: AudioEngineManager
     public let meetingCoordinator: MeetingCoordinator
     
@@ -27,6 +28,10 @@ public final class AppCoordinator: ObservableObject {
     private var currentAudioLevel: Float = 0.2
     private var currentLivePartial: String = ""
     private var isTranscribingPartial: Bool = false
+    /// Thread-safe gate read from the audio callback thread.
+    private let dictationCaptureActive = CaptureFlag()
+    private var micLevelToken: UUID?
+    private var micBufferToken: UUID?
     /// Byte count at the last partial attempt, used to skip decodes when no
     /// new audio has arrived since the previous partial.
     private var lastPartialByteCount: Int = 0
@@ -45,12 +50,19 @@ public final class AppCoordinator: ObservableObject {
     }
     
     public init() {
-        self.phononRunner = PhononProcessRunner()
+        let runner = PhononProcessRunner()
+        let hub = AudioHub()
+        
+        self.phononRunner = runner
         self.textInjector = TextInjector()
         self.hotkeyManager = HotkeyManager()
         self.floatingPill = FloatingPillPanel()
-        self.micEngine = AudioEngineManager()
-        self.meetingCoordinator = MeetingCoordinator(phononRunner: phononRunner)
+        self.audioHub = hub
+        self.micEngine = hub.micEngine
+        self.meetingCoordinator = MeetingCoordinator(
+            dualChannel: DualChannelCoordinator(hub: hub),
+            phononRunner: runner
+        )
         
         setupHotkeyWiring()
         setupMicWiring()
@@ -94,9 +106,9 @@ public final class AppCoordinator: ObservableObject {
     }
     
     private func setupMicWiring() {
-        micEngine.onVolumeLevel = { [weak self] level in
+        micLevelToken = audioHub.addMicLevelObserver { [weak self] level in
             Task { @MainActor in
-                guard let self = self, self.isDictating else { return }
+                guard let self = self, self.dictationCaptureActive.isSet else { return }
                 self.currentAudioLevel = level
                 self.floatingPill.updateState(.listening(
                     audioLevel: level,
@@ -107,8 +119,8 @@ public final class AppCoordinator: ObservableObject {
             }
         }
         
-        micEngine.onAudioBuffer = { [weak self] pcmBuffer in
-            guard let self = self, self.isDictating else { return }
+        micBufferToken = audioHub.addMicBufferObserver { [weak self] pcmBuffer in
+            guard let self = self, self.dictationCaptureActive.isSet else { return }
             guard let canonical = AudioBufferConverter.resampleTo16kMono(pcmBuffer),
                   let int16Data = AudioBufferConverter.int16PCM(from: canonical) else { return }
             self.dictationBuffer.append(int16Data)
@@ -145,7 +157,18 @@ public final class AppCoordinator: ObservableObject {
             isLocked: hotkeyManager.isLocked,
             elapsedSeconds: 0
         ))
-        try? micEngine.startCapture()
+        
+        dictationCaptureActive.set(true)
+        do {
+            try audioHub.retainMicrophone()
+        } catch {
+            dictationCaptureActive.set(false)
+            isDictating = false
+            floatingPill.updateState(.error(message: "Microphone unavailable: \(error.localizedDescription)"))
+            statusMessage = "Microphone unavailable: \(error.localizedDescription)"
+            MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
+            return
+        }
         
         // Start live progressive partial transcription loop (every 650ms)
         partialTimer?.invalidate()
@@ -227,6 +250,7 @@ public final class AppCoordinator: ObservableObject {
     public func finishDictation() async {
         guard isDictating else { return }
         isDictating = false
+        dictationCaptureActive.set(false)
         partialTimer?.invalidate()
         partialTimer = nil
         durationTimer?.invalidate()
@@ -234,7 +258,7 @@ public final class AppCoordinator: ObservableObject {
         dictationStartTime = nil
         isTranscribingPartial = false
         
-        micEngine.stopCapture()
+        audioHub.releaseMicrophone()
         floatingPill.updateState(.transcribing)
         
         hotkeyManager.unlock()
@@ -379,5 +403,23 @@ public final class AppCoordinator: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
+    }
+}
+
+/// Small thread-safe latch for state read by the CoreAudio callback thread.
+private final class CaptureFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+    
+    func set(_ newValue: Bool) {
+        lock.lock()
+        value = newValue
+        lock.unlock()
     }
 }

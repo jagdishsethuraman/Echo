@@ -10,12 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Shared audio hub:** Dictation and meeting capture now share one `AudioEngineManager` through a reference-counted `AudioHub` instead of opening two taps on the same microphone. Buffers and meters fan out to multiple observers, so one consumer can no longer silently replace another.
+- **Bounded transcription queue:** Meeting segments are transcribed through `TranscriptionService` with a single in-flight engine process (configurable) instead of one unbounded `fermion` process per VAD segment. `stopSession()` now waits (up to 5 s) for the queue to drain before writing `endTime`, so the final utterance is included in the session and export.
+- **VAD pre-roll:** The detector keeps a configurable 300 ms pre-roll buffer and prepends it when speech starts, preventing clipped word onsets. Segment callbacks are now delivered synchronously so shutdown can observe the final segment.
 - **Native "Graphite Frost" interface:** Replaced the black/brass/lavender theme with a neutral frosted graphite palette, a cool frost-blue primary accent, and a sea-glass secondary accent. Typography now uses SF Pro with monospaced digits only where telemetry benefits from them.
 - **Meeting Studio redesign:** The window now uses real `NSVisualEffectView` vibrancy with a dark appearance, hidden titlebar, autosaved frame, and a unified toolbar-style header showing the session title, recording state, input meters, word memory, and record control. The accessibility notice is a quiet inline banner instead of an amber warning strip.
 - **Transcript & Notes:** Transcript rows use native list spacing with speaker avatars, hover-to-copy, and subtle selection; the notes inspector has frosted cards, action-item progress (`2/4`), and a pinned accent export button.
 - **HUD & menu bar:** The floating pill shares the graphite glass treatment with the frost-blue waveform. The menu-bar item uses SF Symbols for idle, dictating, and recording states, and menu copy was shortened to match macOS conventions.
 - **App icon:** Replaced the old icon with the elk artwork, rebuilt on Apple's 824pt squircle grid with a soft dock shadow and hairline rim. The source, 1024px master, iconset, and regeneration scripts now live in the repo.
 - **Developer tooling:** Debug builds accept `Echo --snapshot <directory>` to render PNGs of the studio and HUD, and Xcode `#Preview`s cover both surfaces for design iteration.
+
+### Fixed
+- **Safe SQLite database fallback:** Added graceful `NSTemporaryDirectory()` fallback in `DatabaseManager` ensuring tables are created and operations proceed even under restricted sandbox permissions.
+- **Accessibility injection safety:** Guarded `focusedElement` with `CFGetTypeID` against unexpected CFTypes before casting to `AXUIElement` (`CORE-03`).
+- **Eliminated double SwiftUI invalidation:** Removed redundant manual `objectWillChange.send()` calls when mutating `@Published` properties (`CORE-02`).
 
 ---
 

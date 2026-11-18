@@ -188,4 +188,66 @@ struct VoiceActivityDetectorTests {
         
         #expect(await waitForSegments(recorder, count: 1))
     }
+    
+    @Test func preRollKeepsWordOnsets() async {
+        let vad = VoiceActivityDetector(
+            energyThreshold: 0.1,
+            silenceThresholdSeconds: 0.21,
+            minSpeechDurationSeconds: 0.1,
+            preRollSeconds: 0.2
+        )
+        let recorder = SegmentRecorder()
+        let chunk = chunk()
+        vad.onSpeechSegmentCompleted = { pcm, duration in
+            recorder.record(pcm, duration)
+        }
+        
+        // 200 ms of silence before speech becomes the pre-roll.
+        for _ in 0..<2 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.0)
+        }
+        // 300 ms of speech, then the 200 ms of silence that closes the segment.
+        for _ in 0..<3 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.5)
+        }
+        for _ in 0..<2 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.0)
+        }
+        
+        #expect(recorder.count == 1)
+        let segment = recorder.snapshot.first
+        // 200 ms pre-roll + 300 ms speech + 200 ms trailing silence.
+        #expect(segment?.pcm.count == 7 * chunk.count)
+        #expect(abs((segment?.duration ?? 0) - 0.7) < 0.001)
+    }
+    
+    @Test func preRollIsBounded() async {
+        let vad = VoiceActivityDetector(
+            energyThreshold: 0.1,
+            silenceThresholdSeconds: 0.21,
+            minSpeechDurationSeconds: 0.1,
+            preRollSeconds: 0.15
+        )
+        let recorder = SegmentRecorder()
+        let chunk = chunk()
+        vad.onSpeechSegmentCompleted = { pcm, duration in
+            recorder.record(pcm, duration)
+        }
+        
+        // 500 ms of silence, of which only the last 150 ms is retained.
+        for _ in 0..<5 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.0)
+        }
+        for _ in 0..<3 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.5)
+        }
+        for _ in 0..<2 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.0)
+        }
+        
+        #expect(recorder.count == 1)
+        let segment = recorder.snapshot.first
+        // 150 ms pre-roll + 300 ms speech + 200 ms trailing silence.
+        #expect(abs((segment?.duration ?? 0) - 0.65) < 0.001)
+    }
 }

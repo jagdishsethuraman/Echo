@@ -277,7 +277,9 @@ public final class TextInjector: @unchecked Sendable {
             &focusedElementValue
         )
         
-        guard result == .success, let focusedElement = focusedElementValue else {
+        guard result == .success,
+              let focusedElement = focusedElementValue,
+              CFGetTypeID(focusedElement) == AXUIElementGetTypeID() else {
             return false
         }
         

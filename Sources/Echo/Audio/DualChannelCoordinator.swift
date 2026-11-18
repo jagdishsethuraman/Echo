@@ -25,9 +25,15 @@ public struct TaggedAudioSegment: Sendable {
     }
 }
 
+/// Meeting-side view of the shared `AudioHub`.
+///
+/// The coordinator no longer owns an audio engine of its own; retaining the hub
+/// lets dictation and meeting capture coexist without a second tap on the
+/// microphone.
 public final class DualChannelCoordinator: @unchecked Sendable {
-    public let micEngine: AudioEngineManager
-    public let systemCapture: SystemAudioCapture
+    public let hub: AudioHub
+    public var micEngine: AudioEngineManager { hub.micEngine }
+    public var systemCapture: SystemAudioCapture { hub.systemCapture }
     
     public private(set) var micLevel: Float = 0.0
     public private(set) var systemLevel: Float = 0.0
@@ -37,19 +43,21 @@ public final class DualChannelCoordinator: @unchecked Sendable {
     public var onDualLevelsUpdated: ((Float, Float) -> Void)?
     
     private let stateQueue = DispatchQueue(label: "com.echo.dualchannel.state")
+    private var micLevelToken: UUID?
+    private var systemLevelToken: UUID?
     
-    public init(
-        micEngine: AudioEngineManager = AudioEngineManager(),
-        systemCapture: SystemAudioCapture = SystemAudioCapture()
-    ) {
-        self.micEngine = micEngine
-        self.systemCapture = systemCapture
-        
+    public init(hub: AudioHub = AudioHub()) {
+        self.hub = hub
         setupCallbacks()
     }
     
+    deinit {
+        if let micLevelToken { hub.removeObserver(micLevelToken) }
+        if let systemLevelToken { hub.removeObserver(systemLevelToken) }
+    }
+    
     private func setupCallbacks() {
-        micEngine.onVolumeLevel = { [weak self] level in
+        micLevelToken = hub.addMicLevelObserver { [weak self] level in
             guard let self = self else { return }
             let sLevel = self.stateQueue.sync { () -> Float in
                 self.micLevel = level
@@ -58,7 +66,7 @@ public final class DualChannelCoordinator: @unchecked Sendable {
             self.onDualLevelsUpdated?(level, sLevel)
         }
         
-        systemCapture.onSystemVolumeLevel = { [weak self] level in
+        systemLevelToken = hub.addSystemLevelObserver { [weak self] level in
             guard let self = self else { return }
             let mLevel = self.stateQueue.sync { () -> Float in
                 self.systemLevel = level
@@ -77,12 +85,19 @@ public final class DualChannelCoordinator: @unchecked Sendable {
         }
         guard shouldStart else { return }
         
-        // Start Mic
-        try micEngine.startCapture()
-        
-        // Start System Loopback
+        // Start Mic. If the engine cannot start, roll back the recording flag
+        // so a later attempt can try again.
         do {
-            try await systemCapture.startCapture()
+            try hub.retainMicrophone()
+        } catch {
+            stateQueue.sync { isRecording = false }
+            throw error
+        }
+        
+        // System loopback is optional: a missing screen-recording permission
+        // should not abort microphone transcription.
+        do {
+            try await hub.retainSystemAudio()
         } catch {
             print("System audio capture notice: \(error.localizedDescription)")
         }
@@ -99,8 +114,8 @@ public final class DualChannelCoordinator: @unchecked Sendable {
         }
         guard shouldStop else { return }
         
-        micEngine.stopCapture()
-        try? await systemCapture.stopCapture()
+        hub.releaseMicrophone()
+        await hub.releaseSystemAudio()
         
         onDualLevelsUpdated?(0.0, 0.0)
     }
