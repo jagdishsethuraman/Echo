@@ -10,13 +10,38 @@ public final class DatabaseManager: @unchecked Sendable {
         public var errorDescription: String? { message }
     }
 
+    public enum DatabaseError: LocalizedError, Sendable {
+        case unavailable(String)
+        case executionFailed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .unavailable(let message): return "Database unavailable: \(message)"
+            case .executionFailed(let message): return "Database operation failed: \(message)"
+            }
+        }
+    }
+
     /// The database is unavailable when opening, migration, or validation fails.
     public private(set) var startupError: StartupError?
     
     private var db: OpaquePointer?
     private let lock = NSLock()
     private var dbPath: String
+    private var _isUsingFallback: Bool = false
     private let dbQueue = DispatchQueue(label: "com.echo.database", qos: .utility)
+    
+    public var isUsingFallbackStorage: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isUsingFallback
+    }
+
+    public var activeDatabasePath: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return dbPath
+    }
     
     /// Callback for surfacing runtime SQLite failures to the UI. Invoked on the main
     /// queue; kept outside `lock` so a handler that reads the database cannot
@@ -116,6 +141,7 @@ public final class DatabaseManager: @unchecked Sendable {
         
         if sqlite3_open(fallbackPath, &db) == SQLITE_OK {
             dbPath = fallbackPath
+            _isUsingFallback = true
             print("Echo DatabaseManager: Initialized at fallback: \(fallbackPath)")
             return
         }
@@ -124,6 +150,7 @@ public final class DatabaseManager: @unchecked Sendable {
         let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("echo.sqlite").path
         guard sqlite3_open(tempPath, &db) == SQLITE_OK else { throw openError }
         dbPath = tempPath
+        _isUsingFallback = true
         print("Echo DatabaseManager: Initialized at temp fallback: \(tempPath)")
     }
 
@@ -261,10 +288,10 @@ public final class DatabaseManager: @unchecked Sendable {
     
     // MARK: - Sessions & Utterances
     
-    public func saveSession(_ session: MeetingSession) {
-        lock.lock()
-        defer { lock.unlock() }
-        
+    private func saveSessionLocked(_ session: MeetingSession) throws {
+        guard let db else {
+            throw DatabaseError.unavailable("Database pointer is nil")
+        }
         let sql = """
         INSERT INTO sessions (id, title, start_time, end_time, summary_markdown, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -275,32 +302,35 @@ public final class DatabaseManager: @unchecked Sendable {
         """
         
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            bindText(stmt, 1, session.id.uuidString)
-            bindText(stmt, 2, session.title)
-            sqlite3_bind_double(stmt, 3, session.startTime.timeIntervalSince1970)
-            
-            if let end = session.endTime {
-                sqlite3_bind_double(stmt, 4, end.timeIntervalSince1970)
-            } else {
-                sqlite3_bind_null(stmt, 4)
-            }
-            
-            bindText(stmt, 5, session.summaryMarkdown)
-            
-            sqlite3_bind_double(stmt, 6, Date().timeIntervalSince1970)
-            
-            if sqlite3_step(stmt) != SQLITE_DONE {
-                reportError("saveSession")
-            }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            throw DatabaseError.executionFailed("saveSession prepare failed: \(msg)")
         }
-        sqlite3_finalize(stmt)
-    }
-    
-    public func saveUtterance(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) {
-        lock.lock()
-        defer { lock.unlock() }
         
+        bindText(stmt, 1, session.id.uuidString)
+        bindText(stmt, 2, session.title)
+        sqlite3_bind_double(stmt, 3, session.startTime.timeIntervalSince1970)
+        
+        if let end = session.endTime {
+            sqlite3_bind_double(stmt, 4, end.timeIntervalSince1970)
+        } else {
+            sqlite3_bind_null(stmt, 4)
+        }
+        
+        bindText(stmt, 5, session.summaryMarkdown)
+        sqlite3_bind_double(stmt, 6, Date().timeIntervalSince1970)
+        
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            throw DatabaseError.executionFailed("saveSession step failed: \(msg)")
+        }
+    }
+
+    private func saveUtteranceLocked(_ segment: TranscriptSegment, sessionId: UUID?, isDictation: Bool) throws {
+        guard let db else {
+            throw DatabaseError.unavailable("Database pointer is nil")
+        }
         let sql = """
         INSERT INTO utterances (id, session_id, speaker, timestamp, text, duration_seconds, is_dictation)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -309,22 +339,81 @@ public final class DatabaseManager: @unchecked Sendable {
         """
         
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            bindText(stmt, 1, segment.id.uuidString)
-            bindText(stmt, 2, sessionId?.uuidString)
-            
-            let speakerStr = segment.speaker == .you ? "you" : "meeting"
-            bindText(stmt, 3, speakerStr)
-            sqlite3_bind_double(stmt, 4, segment.timestamp.timeIntervalSince1970)
-            bindText(stmt, 5, segment.text)
-            sqlite3_bind_double(stmt, 6, segment.durationSeconds)
-            sqlite3_bind_int(stmt, 7, isDictation ? 1 : 0)
-            
-            if sqlite3_step(stmt) != SQLITE_DONE {
-                reportError("saveUtterance")
-            }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            throw DatabaseError.executionFailed("saveUtterance prepare failed: \(msg)")
         }
-        sqlite3_finalize(stmt)
+        
+        bindText(stmt, 1, segment.id.uuidString)
+        bindText(stmt, 2, sessionId?.uuidString)
+        
+        let speakerStr = segment.speaker == .you ? "you" : "meeting"
+        bindText(stmt, 3, speakerStr)
+        sqlite3_bind_double(stmt, 4, segment.timestamp.timeIntervalSince1970)
+        bindText(stmt, 5, segment.text)
+        sqlite3_bind_double(stmt, 6, segment.durationSeconds)
+        sqlite3_bind_int(stmt, 7, isDictation ? 1 : 0)
+        
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            throw DatabaseError.executionFailed("saveUtterance step failed: \(msg)")
+        }
+    }
+
+    public func saveSession(_ session: MeetingSession) {
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            try saveSessionLocked(session)
+        } catch {
+            reportError("saveSession")
+        }
+    }
+    
+    public func saveUtterance(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            try saveUtteranceLocked(segment, sessionId: sessionId, isDictation: isDictation)
+        } catch {
+            reportError("saveUtterance")
+        }
+    }
+
+    /// Atomically persists both session metadata and an utterance in a single immediate transaction.
+    public func saveSessionAndUtterance(
+        _ session: MeetingSession,
+        segment: TranscriptSegment,
+        isDictation: Bool
+    ) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let db else {
+            throw DatabaseError.unavailable("Database pointer is nil")
+        }
+
+        guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION;", nil, nil, nil) == SQLITE_OK else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            reportError("saveSessionAndUtterance BEGIN")
+            throw DatabaseError.executionFailed("BEGIN TRANSACTION failed: \(msg)")
+        }
+
+        do {
+            try saveSessionLocked(session)
+            try saveUtteranceLocked(segment, sessionId: session.id, isDictation: isDictation)
+            guard sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK else {
+                let msg = String(cString: sqlite3_errmsg(db))
+                throw DatabaseError.executionFailed("COMMIT failed: \(msg)")
+            }
+        } catch {
+            if sqlite3_get_autocommit(db) == 0 {
+                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+            }
+            reportError("saveSessionAndUtterance")
+            throw error
+        }
     }
     
     public func deleteSession(id: UUID) {
@@ -383,6 +472,21 @@ public final class DatabaseManager: @unchecked Sendable {
         return Int(sqlite3_changes(db))
     }
 
+    /// Standalone dictation retention: remove all utterances not tied to a meeting session.
+    @discardableResult
+    public func deleteStandaloneDictations() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let db else { return 0 }
+        let sql = "DELETE FROM utterances WHERE session_id IS NULL;"
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            reportError("deleteStandaloneDictations")
+            return 0
+        }
+        return Int(sqlite3_changes(db))
+    }
+
     public func checkpointWAL() {
         lock.lock()
         defer { lock.unlock() }
@@ -415,18 +519,34 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
     
-    /// Persist the session metadata and its new utterance in one queue hop so
-    /// the utterance can never be written before its parent row.
+    /// Persist session metadata and utterance atomically in a single SQLite transaction.
+    @discardableResult
     public func saveSessionAndUtteranceAsync(
         _ session: MeetingSession,
         segment: TranscriptSegment,
         isDictation: Bool
-    ) async {
+    ) async -> Result<Void, Error> {
         await withCheckedContinuation { continuation in
             dbQueue.async {
-                self.saveSession(session)
-                self.saveUtterance(segment, sessionId: session.id, isDictation: isDictation)
-                continuation.resume()
+                do {
+                    try self.saveSessionAndUtterance(session, segment: segment, isDictation: isDictation)
+                    continuation.resume(returning: .success(()))
+                } catch {
+                    continuation.resume(returning: .failure(error))
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    public func deleteStandaloneDictationsAsync() async -> Int {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                let removed = self.deleteStandaloneDictations()
+                if removed > 0 {
+                    self.checkpointWAL()
+                }
+                continuation.resume(returning: removed)
             }
         }
     }

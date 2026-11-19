@@ -82,6 +82,12 @@ public final class AppCoordinator: ObservableObject {
         setupPillWiring()
         setupAudioErrorWiring()
 
+        if let err = DatabaseManager.shared.startupError {
+            self.statusMessage = "Storage error: \(err.message)"
+        } else if DatabaseManager.shared.isUsingFallbackStorage {
+            self.statusMessage = "Warning: Storage running on fallback directory (\(DatabaseManager.shared.activeDatabasePath))"
+        }
+
         DatabaseManager.shared.onError = { [weak self] message in
             Task { @MainActor in
                 self?.statusMessage = "Storage error: \(message)"
@@ -510,6 +516,16 @@ public final class AppCoordinator: ObservableObject {
         statusMessage = removed == 0
             ? "No empty sessions to remove"
             : "Removed \(removed) empty session\(removed == 1 ? "" : "s")"
+    }
+
+    /// Standalone dictation retention: remove all utterances not tied to a meeting session.
+    @discardableResult
+    public func deleteStandaloneDictations() async -> Int {
+        let removed = await DatabaseManager.shared.deleteStandaloneDictationsAsync()
+        statusMessage = removed == 0
+            ? "No standalone dictations to remove"
+            : "Removed \(removed) standalone dictation snippet\(removed == 1 ? "" : "s")"
+        return removed
     }
 
     public func exportLastMeetingMarkdown() {

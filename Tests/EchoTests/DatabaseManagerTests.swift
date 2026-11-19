@@ -436,4 +436,64 @@ struct DatabaseManagerTests {
         let nonExistent = db.fetchSession(id: UUID())
         #expect(nonExistent == nil)
     }
+
+    @Test func atomicSaveSessionAndUtterance() async {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        let session = MeetingSession(title: "Atomic Sync")
+        let seg = TranscriptSegment(speaker: .you, text: "atomic line", durationSeconds: 1.5)
+
+        let result = await db.saveSessionAndUtteranceAsync(session, segment: seg, isDictation: false)
+        switch result {
+        case .success:
+            break
+        case .failure(let error):
+            Issue.record("Expected atomic save to succeed, got: \(error)")
+        }
+
+        let fetchedSession = db.fetchSession(id: session.id)
+        #expect(fetchedSession?.title == "Atomic Sync")
+        let utterances = db.fetchUtterances(sessionId: session.id)
+        #expect(utterances.count == 1)
+        #expect(utterances.first?.text == "atomic line")
+    }
+
+    @Test func deleteStandaloneDictationsRemovesOnlyUnlinkedUtterances() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        let session = MeetingSession(title: "Meeting With Segments")
+        db.saveSession(session)
+
+        let meetingSeg = TranscriptSegment(speaker: .meeting, text: "meeting utterance", durationSeconds: 2.0)
+        db.saveUtterance(meetingSeg, sessionId: session.id, isDictation: false)
+
+        let standaloneSeg1 = TranscriptSegment(speaker: .you, text: "standalone dictation 1", durationSeconds: 1.0)
+        let standaloneSeg2 = TranscriptSegment(speaker: .you, text: "standalone dictation 2", durationSeconds: 1.2)
+        db.saveUtterance(standaloneSeg1, sessionId: nil, isDictation: true)
+        db.saveUtterance(standaloneSeg2, sessionId: nil, isDictation: true)
+
+        let dictationsBefore = db.fetchRecentDictations()
+        #expect(dictationsBefore.count == 2)
+
+        let deleted = db.deleteStandaloneDictations()
+        #expect(deleted == 2)
+
+        let dictationsAfter = db.fetchRecentDictations()
+        #expect(dictationsAfter.isEmpty)
+
+        // Meeting utterances must be preserved
+        let meetingUtterances = db.fetchUtterances(sessionId: session.id)
+        #expect(meetingUtterances.count == 1)
+        #expect(meetingUtterances.first?.text == "meeting utterance")
+    }
+
+    @Test func storageReportsActivePathAndFallbackStatus() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        #expect(db.activeDatabasePath.contains(directory.path))
+        #expect(db.isUsingFallbackStorage == false)
+    }
 }

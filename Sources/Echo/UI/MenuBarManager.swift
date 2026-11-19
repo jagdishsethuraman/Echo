@@ -342,6 +342,14 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         cleanup.target = self
         historyMenu.addItem(cleanup)
 
+        let clearDictations = NSMenuItem(
+            title: "Clear Dictation History…",
+            action: #selector(clearDictationHistory),
+            keyEquivalent: ""
+        )
+        clearDictations.target = self
+        historyMenu.addItem(clearDictations)
+
         historyItem.submenu = historyMenu
         return historyItem
     }
@@ -384,6 +392,21 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
     @objc private func cleanupEmptySessions() {
         Task { @MainActor in
             await coordinator.deleteEmptySessions()
+            rebuildMenu()
+        }
+    }
+
+    @objc private func clearDictationHistory() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Clear Dictation History?"
+        alert.informativeText = "All standalone dictation snippets will be removed from local storage."
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task { @MainActor in
+            await coordinator.deleteStandaloneDictations()
             rebuildMenu()
         }
     }
