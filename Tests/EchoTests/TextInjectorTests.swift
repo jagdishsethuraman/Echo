@@ -11,6 +11,17 @@ struct TextInjectorTests {
         func typeUnicodeString(_ string: String) -> Bool { false }
     }
 
+    /// Simulates a concurrent copy occurring on the pasteboard while paste is executing.
+    private final class ConcurrentCopyingPoster: EventPosterProtocol, @unchecked Sendable {
+        private let pasteboard: PasteboardProtocol
+        init(pasteboard: PasteboardProtocol) { self.pasteboard = pasteboard }
+        func postCmdV() -> Bool {
+            _ = pasteboard.setString("user copied something else during paste", forType: .string)
+            return true
+        }
+        func typeUnicodeString(_ string: String) -> Bool { false }
+    }
+
     private func makeInjector(
         pasteboard: InMemoryPasteboard = InMemoryPasteboard(),
         poster: EventPosterProtocol = MockEventPoster(),
@@ -107,6 +118,28 @@ struct TextInjectorTests {
         #expect(result.success)
         #expect(result.method == .syntheticPaste)
         #expect(pasteboard.string(forType: .string) == "crucial user clipboard content")
+    }
+
+    @Test func restoreClipboardPreservesNewerConcurrentCopy() async {
+        let pasteboard = InMemoryPasteboard(initialString: "old clipboard")
+        let poster = ConcurrentCopyingPoster(pasteboard: pasteboard)
+        let injector = makeInjector(pasteboard: pasteboard, poster: poster)
+        
+        let result = await injector.inject(
+            text: "temporary dictated snippet",
+            options: InjectionOptions(restorePreviousClipboard: true)
+        )
+        
+        #expect(result.success)
+        #expect(result.method == .syntheticPaste)
+        #expect(pasteboard.string(forType: .string) == "user copied something else during paste")
+    }
+
+    @Test func systemEventPosterHandlesEmojiAndGraphemeClusters() {
+        let poster = SystemEventPoster()
+        // Running in CI / test process without CGEventSource access returns false, or true if permitted.
+        // Crucially, it must execute character iteration over multi-byte emojis without crashing or splitting surrogates.
+        _ = poster.typeUnicodeString("Echo 🎙️ 👋🏽")
     }
     
     @Test func pasteIsUsedWhenDirectTypingIsDisabled() async {

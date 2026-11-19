@@ -55,15 +55,15 @@ public final class SystemEventPoster: EventPosterProtocol, @unchecked Sendable {
         
         usleep(20_000) // 20ms settle delay
         
-        for char in string.utf16 {
+        for character in string {
+            var units = Array(character.utf16)
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
-                continue
+                return false
             }
             
-            var unit = char
-            keyDown.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
-            keyUp.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
+            keyDown.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            keyUp.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
             
             // Clear any lingering modifier flags (Control/Option/Shift)
             keyDown.flags = []
@@ -386,21 +386,21 @@ public final class TextInjector: @unchecked Sendable {
         let snapshot = options.restorePreviousClipboard ? pasteboard.snapshotItems() : nil
 
         // 3. Put the prepared transcript on the clipboard for the fallbacks.
-        writeToClipboard(prepared)
+        let expectedChangeCount = writeToClipboard(prepared)
 
         // 4. Follow the configured cascade order.
         switch options.order {
         case .axDirectThenPasteThenTyping:
             // Synthetic Cmd+V paste first (fast, universal, reliable).
             if eventPoster.postCmdV() {
-                restoreClipboard(snapshot, enabled: options.restorePreviousClipboard, afterPaste: true)
+                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: true)
                 return (true, .syntheticPaste)
             }
             
             // Fallback to direct typing if enabled and text is reasonably short.
             if options.useDirectTyping && prepared.count < 300,
                eventPoster.typeUnicodeString(prepared) {
-                restoreClipboard(snapshot, enabled: options.restorePreviousClipboard, afterPaste: false)
+                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: false)
                 return (true, .directTyping)
             }
             
@@ -408,13 +408,13 @@ public final class TextInjector: @unchecked Sendable {
             // Direct typing first if enabled and text is reasonably short.
             if options.useDirectTyping && prepared.count < 300,
                eventPoster.typeUnicodeString(prepared) {
-                restoreClipboard(snapshot, enabled: options.restorePreviousClipboard, afterPaste: false)
+                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: false)
                 return (true, .directTyping)
             }
             
             // Fallback to Cmd+V paste.
             if eventPoster.postCmdV() {
-                restoreClipboard(snapshot, enabled: options.restorePreviousClipboard, afterPaste: true)
+                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: true)
                 return (true, .syntheticPaste)
             }
         }
@@ -434,20 +434,28 @@ public final class TextInjector: @unchecked Sendable {
         return tryDirectAccessibilityInjection(text: text)
     }
 
-    private func writeToClipboard(_ text: String) {
+    @discardableResult
+    private func writeToClipboard(_ text: String) -> Int {
         _ = pasteboard.clearContents()
         _ = pasteboard.declareTypes([.string], owner: nil)
         _ = pasteboard.setString(text, forType: .string)
+        return pasteboard.changeCount
     }
 
     /// Restores the snapshot taken before the clipboard was overwritten. When
     /// restoration is disabled the transcript is left in place. A `nil`
     /// snapshot means the clipboard was empty, so it is cleared again.
-    private func restoreClipboard(_ snapshot: [NSPasteboardItem]?, enabled: Bool, afterPaste: Bool) {
+    /// If the pasteboard's `changeCount` has changed since the fallback was
+    /// written, another process or user copied newer content; in that case,
+    /// we do not clobber the user's newer clipboard state.
+    private func restoreClipboard(_ snapshot: [NSPasteboardItem]?, expectedChangeCount: Int, enabled: Bool, afterPaste: Bool) {
         guard enabled else { return }
         if afterPaste {
             // Give the target app time to read the pasteboard before restoring.
             usleep(60_000)
+        }
+        guard pasteboard.changeCount == expectedChangeCount else {
+            return
         }
         if let snapshot {
             _ = pasteboard.restoreItems(snapshot)
