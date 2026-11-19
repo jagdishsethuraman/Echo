@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.2] - 2026-11-20
+
+### Added
+- **Dictation history deletion control (#13):** Added `Clear Dictation History…` menu item under Meeting History, allowing users to safely purge standalone dictation snippets not tied to a meeting session (`DatabaseManager.deleteStandaloneDictations()`).
+- **Degraded storage visibility (#12):** Exposed `DatabaseManager.isUsingFallbackStorage` and `activeDatabasePath`, surfacing status and warnings when Echo is running on a temporary fallback database.
+
+### Fixed
+- **Atomic session and utterance transactions (#11):** Wrapped session metadata and utterance persistence in a single immediate SQLite transaction with typed Result, preventing orphaned utterances and partial saves.
+- **Concurrent clipboard overwrite protection (#14):** Guarded clipboard snapshot restoration against changes in `NSPasteboard.changeCount`, preserving newer content copied by the user during the paste cascade.
+- **Emoji grapheme cluster typing (#15):** `SystemEventPoster.typeUnicodeString` now iterates full extended grapheme clusters rather than isolated UTF-16 code units, preventing emoji surrogate pair splitting and accurately reporting event failures.
+- **Timeline capture-boundary timestamps (#10):** VAD now records exact audio boundary onset timestamps when speech starts, preserving chronologically ordered transcript segments in session timelines even under uneven inference latencies.
+- **Single-pass system audio conversion (#17):** Decodes and resamples ScreenCaptureKit audio once per callback, sharing the converted 16 kHz buffer with VU meters and VAD while resetting stateful converter filters across session boundaries.
+
 ## [1.4.1] - 2026-11-19
 
 ### Fixed
