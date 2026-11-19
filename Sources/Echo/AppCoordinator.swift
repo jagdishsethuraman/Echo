@@ -17,10 +17,15 @@ public final class AppCoordinator: ObservableObject {
     
     // State Tracking
     @Published public var isDictating: Bool = false
-    @Published public var isMeetingActive: Bool = false
+    @Published public private(set) var isMeetingActive = false
+    @Published public private(set) var isMeetingFinalizing = false
     @Published public var statusMessage: String = "Echo Ready (Phonon-2 Local)"
     @Published public var lastTranscript: String = ""
     
+    private var isMeetingTransitioning = false
+    private var isShuttingDown = false
+    private let dictationWork = DispatchGroup()
+
     // Live Progressive Dictation State
     private let dictationBuffer = AudioPCMBufferStore()
     private var partialTimer: Timer?
@@ -46,6 +51,12 @@ public final class AppCoordinator: ObservableObject {
     /// Safety cap that finishes a run-away hands-free dictation.
     private static let maximumDictationSeconds: TimeInterval = 600
     
+    private var captureMenuState: MenuBarManager.MenuState {
+        if isMeetingFinalizing { return .meetingFinalizing }
+        if isDictating { return .dictating }
+        return isMeetingActive ? .meetingRecording : .idle
+    }
+
     private var elapsedSeconds: Int {
         guard let start = dictationStartTime else { return 0 }
         return max(0, Int(Date().timeIntervalSince(start)))
@@ -205,7 +216,7 @@ public final class AppCoordinator: ObservableObject {
     }
     
     public func startDictation() {
-        guard !isDictating else { return }
+        guard !isDictating, !isShuttingDown else { return }
         
         let authStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         if authStatus == .denied || authStatus == .restricted {
@@ -219,7 +230,7 @@ public final class AppCoordinator: ObservableObject {
         currentLivePartial = ""
         isTranscribingPartial = false
         lastPartialByteCount = 0
-        MenuBarManager.shared.updateMenuBarIcon(state: .dictating)
+        MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
         
         dictationBuffer.removeAll()
         
@@ -239,7 +250,7 @@ public final class AppCoordinator: ObservableObject {
             isDictating = false
             floatingPill.updateState(.error(message: "Microphone unavailable: \(error.localizedDescription)"))
             statusMessage = "Microphone unavailable: \(error.localizedDescription)"
-            MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
+            MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
             return
         }
         
@@ -284,7 +295,11 @@ public final class AppCoordinator: ObservableObject {
         lastPartialByteCount = snapshot.totalByteCount
         
         isTranscribingPartial = true
-        defer { isTranscribingPartial = false }
+        dictationWork.enter()
+        defer {
+            isTranscribingPartial = false
+            dictationWork.leave()
+        }
         
         do {
             let partialText = try await transcribePCM(snapshot.pcm)
@@ -319,7 +334,10 @@ public final class AppCoordinator: ObservableObject {
     }
     
     public func finishDictation() async {
-        guard isDictating else { return }
+        guard isDictating, !isShuttingDown else { return }
+        let meetingSessionID = meetingCoordinator.recordingSessionID
+        dictationWork.enter()
+        defer { dictationWork.leave() }
         isDictating = false
         dictationCaptureActive.set(false)
         partialTimer?.invalidate()
@@ -341,7 +359,7 @@ public final class AppCoordinator: ObservableObject {
         guard capturedData.count >= 3200 else { // Minimum 100ms
             floatingPill.hide()
             statusMessage = "Echo Ready (Phonon-2 Local)"
-            MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
+            MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
             return
         }
         
@@ -365,7 +383,7 @@ public final class AppCoordinator: ObservableObject {
                 // Only append to meeting timeline if a meeting is actively in progress;
                 // otherwise persist to SQLite as standalone dictation.
                 let durationSec = Double(capturedData.count) / Double(AudioPCMBufferStore.bytesPerSecond)
-                if isMeetingActive {
+                if !isShuttingDown, let meetingSessionID, meetingSessionID == meetingCoordinator.recordingSessionID {
                     await meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
                 } else {
                     let segment = TranscriptSegment(
@@ -377,6 +395,7 @@ public final class AppCoordinator: ObservableObject {
                     await DatabaseManager.shared.saveUtteranceAsync(segment, sessionId: nil, isDictation: true)
                 }
                 
+                guard !isShuttingDown else { return }
                 // 2. Direct injection into active text cursor + clipboard placement
                 let injectionResult = await textInjector.inject(text: sanitized)
                 
@@ -403,7 +422,7 @@ public final class AppCoordinator: ObservableObject {
             statusMessage = "Transcription failed"
         }
         
-        MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
+        MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
     }
     
     public func cancelDictation() {
@@ -426,7 +445,7 @@ public final class AppCoordinator: ObservableObject {
         
         floatingPill.hide()
         statusMessage = "Dictation Cancelled"
-        MenuBarManager.shared.updateMenuBarIcon(state: isMeetingActive ? .meetingRecording : .idle)
+        MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
     }
     
     // MARK: - Mode 2: Meeting Studio (Meetily Style)
@@ -442,24 +461,35 @@ public final class AppCoordinator: ObservableObject {
     }
     
     public func toggleMeetingSession() async {
+        guard !isMeetingTransitioning, !isShuttingDown else { return }
+        isMeetingTransitioning = true
+        defer { isMeetingTransitioning = false }
+
         if isMeetingActive {
+            isMeetingFinalizing = true
+            statusMessage = "Finalizing meeting…"
+            MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
             let session = await meetingCoordinator.stopSession()
             isMeetingActive = false
+            isMeetingFinalizing = false
+            guard !isShuttingDown else { return }
             statusMessage = "Meeting Ended (\(session?.segments.count ?? 0) utterances)"
-            MenuBarManager.shared.updateMenuBarIcon(state: .idle)
+            MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
         } else {
             do {
                 try await meetingCoordinator.startSession()
+                guard !isShuttingDown else { return }
                 isMeetingActive = true
                 statusMessage = "Recording Meeting..."
-                MenuBarManager.shared.updateMenuBarIcon(state: .meetingRecording)
+                MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
             } catch {
+                guard !isShuttingDown else { return }
                 statusMessage = "Failed to start meeting: \(error.localizedDescription)"
-                MenuBarManager.shared.updateMenuBarIcon(state: .idle)
+                MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
             }
         }
     }
-    
+
     public func copyLastTranscriptToClipboard() {
         guard !lastTranscript.isEmpty else { return }
         let pasteboard = NSPasteboard.general
@@ -470,8 +500,8 @@ public final class AppCoordinator: ObservableObject {
     
     /// Delete one saved session; the database cascades its utterances.
     public func deleteSession(id: UUID) async {
-        await meetingCoordinator.deleteSession(id: id)
-        statusMessage = "Deleted meeting session"
+        let deleted = await meetingCoordinator.deleteSession(id: id)
+        statusMessage = deleted ? "Deleted meeting session" : "Stop the meeting before deleting it"
     }
 
     /// Remove empty sessions (retention) and compact the WAL.
@@ -483,6 +513,7 @@ public final class AppCoordinator: ObservableObject {
     }
 
     public func exportLastMeetingMarkdown() {
+        guard !isMeetingFinalizing else { return }
         guard let session = meetingCoordinator.activeSession, !session.segments.isEmpty else {
             statusMessage = "No active meeting session to export"
             let alert = NSAlert()
@@ -498,6 +529,7 @@ public final class AppCoordinator: ObservableObject {
     
     @discardableResult
     public func exportSession(id: UUID) -> URL? {
+        guard !isMeetingFinalizing || meetingCoordinator.activeSession?.id != id else { return nil }
         guard let session = DatabaseManager.shared.fetchSession(id: id) else {
             statusMessage = "Session not found"
             return nil
@@ -510,6 +542,7 @@ public final class AppCoordinator: ObservableObject {
     
     @discardableResult
     public func exportSessionMarkdown(_ session: MeetingSession) -> URL? {
+        guard !isMeetingFinalizing || meetingCoordinator.activeSession?.id != session.id else { return nil }
         let md = session.exportMarkdown()
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -545,30 +578,27 @@ public final class AppCoordinator: ObservableObject {
         alert.runModal()
     }
     
-    /// Graceful shutdown on app termination: stops active recording, finalizes open meeting session,
-    /// flushes SQLite WAL, terminates all audio engines, and sweeps temporary audio files.
-    public func shutdownGracefully() {
-        print("[Echo] Initiating graceful application shutdown...")
-        if isDictating {
-            cancelDictation()
+    /// Finish capture and persistence before the termination delegate lets AppKit exit.
+    public func shutdownGracefully() async {
+        isShuttingDown = true
+        hotkeyManager.stopMonitoring()
+        cancelDictation()
+
+        isMeetingFinalizing = isMeetingActive || isMeetingTransitioning
+        if isMeetingFinalizing {
+            statusMessage = "Finalizing meeting…"
+            MenuBarManager.shared.updateMenuBarIcon(state: captureMenuState)
         }
-        
-        if isMeetingActive {
-            isMeetingActive = false
-            Task {
-                await meetingCoordinator.dualChannel.stopMeetingCapture()
-            }
+        _ = await meetingCoordinator.stopSession()
+        isMeetingActive = false
+        isMeetingFinalizing = false
+
+        await audioHub.stopAll()
+        await withCheckedContinuation { continuation in
+            dictationWork.notify(queue: .global()) { continuation.resume() }
         }
-        
-        if var session = meetingCoordinator.activeSession, session.endTime == nil {
-            session.endTime = Date()
-            DatabaseManager.shared.saveSession(session)
-        }
-        
-        audioHub.stopAll()
         DatabaseManager.shared.checkpointWAL()
         AudioTempDirectory.sweepOrphanedAudioFiles()
-        print("[Echo] Graceful shutdown completed.")
     }
 
     public func openAccessibilitySettings() {

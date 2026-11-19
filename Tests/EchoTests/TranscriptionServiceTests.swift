@@ -125,4 +125,42 @@ struct TranscriptionServiceTests {
         #expect(recorder.count == 1)
         #expect(recorder.snapshot.first == .some(nil))
     }
+
+    @Test func unavailableExecutableFailsReadinessCheck() {
+        let missingExecutable = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).path
+        let runner = PhononProcessRunner(fermionPath: missingExecutable)
+        let service = TranscriptionService(runner: runner)
+
+        do {
+            try service.checkReadiness()
+            Issue.record("Expected the engine readiness check to fail")
+        } catch PhononClientError.executableNotFound(let path) {
+            #expect(path == missingExecutable)
+        } catch {
+            Issue.record("Unexpected readiness error: \(error)")
+        }
+    }
+
+    @Test func reportingSubmissionDistinguishesEmptyTranscriptFromFailure() async throws {
+        let service = TranscriptionService(engine: { data in
+            if data.isEmpty { return "" }
+            throw EngineFailure()
+        })
+        try service.checkReadiness()
+
+        await confirmation("empty transcript delivered") { delivered in
+            await service.submitReporting(pcmData: Data()) { result in
+                #expect((try? result.get()) == "")
+                delivered()
+            }.value
+        }
+        await confirmation("transcription failure delivered") { delivered in
+            await service.submitReporting(pcmData: pcm) { result in
+                #expect(throws: EngineFailure.self) { try result.get() }
+                delivered()
+            }.value
+        }
+        #expect(service.isIdle)
+    }
 }

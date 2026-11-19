@@ -4,7 +4,7 @@ import ApplicationServices
 import AVFoundation
 
 @MainActor
-public final class MenuBarManager: NSObject, NSMenuDelegate {
+public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidation {
     public static let shared = MenuBarManager()
     
     private var statusItem: NSStatusItem?
@@ -39,6 +39,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         case idle
         case dictating
         case meetingRecording
+        case meetingFinalizing
     }
     
     public func updateMenuBarIcon(state: MenuState) {
@@ -55,6 +56,11 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
             startRecordingTimer()
             setStatusIcon("waveform.badge.mic", accessibilityLabel: "Echo dictating", tint: Self.frostTint)
             updateRecordingTitle()
+
+        case .meetingFinalizing:
+            stopRecordingTimer()
+            setStatusIcon("hourglass", accessibilityLabel: "Finalizing meeting transcript", tint: Self.frostTint)
+            button.title = ""
 
         case .meetingRecording:
             startRecordingTimer()
@@ -119,6 +125,13 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         let engineItem = NSMenuItem(title: "Phonon-2 speech engine · local", action: nil, keyEquivalent: "")
         engineItem.isEnabled = false
         menu.addItem(engineItem)
+
+        if let message = coordinator.meetingCoordinator.captureError {
+            let notice = NSMenuItem(title: "View Meeting Notice…", action: #selector(openMeetingStudio), keyEquivalent: "")
+            notice.target = self
+            notice.toolTip = message
+            menu.addItem(notice)
+        }
         
         // Accessibility Permission Status
         let isTrusted = AXIsProcessTrusted()
@@ -171,7 +184,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Toggle Meeting Recording
         let recordItem = NSMenuItem(
-            title: currentState == .meetingRecording ? "Stop Meeting Recording" : "Start Meeting Recording",
+            title: coordinator.isMeetingFinalizing ? "Finalizing Meeting…" : (coordinator.isMeetingActive ? "Stop Meeting Recording" : "Start Meeting Recording"),
             action: #selector(toggleMeetingRecording),
             keyEquivalent: "r"
         )
@@ -207,6 +220,26 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         self.statusItem?.menu = menu
     }
     
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(toggleMeetingRecording), #selector(exportLastMeeting):
+            return !coordinator.isMeetingFinalizing
+        case #selector(copyLastDictation):
+            return !coordinator.lastTranscript.isEmpty
+        case #selector(deleteHistorySession(_:)):
+            return !(coordinator.isMeetingActive || coordinator.isMeetingFinalizing) || !targetsCurrentSession(menuItem)
+        case #selector(exportHistorySession(_:)), #selector(copyHistorySession(_:)):
+            return !coordinator.isMeetingFinalizing || !targetsCurrentSession(menuItem)
+        default:
+            return true
+        }
+    }
+
+    private func targetsCurrentSession(_ item: NSMenuItem) -> Bool {
+        guard let id = item.representedObject as? UUID else { return false }
+        return id == coordinator.meetingCoordinator.activeSession?.id
+    }
+
     @objc private func openAccessibility() {
         Task { @MainActor in
             coordinator.openAccessibilitySettings()

@@ -1,15 +1,36 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import Echo
 
 @Suite("DatabaseManager", .serialized)
 struct DatabaseManagerTests {
-    private func makeDatabase() -> (db: DatabaseManager, directory: URL) {
+    private func makeDirectory() -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("echo-db-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func makeDatabase() -> (db: DatabaseManager, directory: URL) {
+        let directory = makeDirectory()
         let db = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
         return (db, directory)
+    }
+
+    private func withSQLite<Result>(at path: String, _ body: (OpaquePointer) throws -> Result) throws -> Result {
+        var connection: OpaquePointer?
+        defer { sqlite3_close(connection) }
+        try #require(sqlite3_open(path, &connection) == SQLITE_OK)
+        return try body(#require(connection))
+    }
+
+    private func sqliteInt(_ sql: String, in connection: OpaquePointer) throws -> Int32 {
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        try #require(sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK)
+        try #require(sqlite3_step(statement) == SQLITE_ROW)
+        return sqlite3_column_int(statement, 0)
     }
     
     private func remove(_ directory: URL) {
@@ -206,19 +227,109 @@ struct DatabaseManagerTests {
         #expect(db.userVersion() >= 2)
     }
 
-    @Test func migrationAddsSessionStartIndex() {
+    @Test func migrationAddsSessionStartIndex() throws {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
+        let path = directory.appendingPathComponent("echo.sqlite").path
+        let session = MeetingSession(title: "Existing meeting")
+        db.saveSession(session)
 
-        // Re-opening an existing v2 database must be idempotent.
-        let reopened = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
-        #expect(reopened.userVersion() == 2)
+        // v1 has the same tables as v2, which adds only the session index.
+        try withSQLite(at: path) { connection in
+            let sql = "DROP INDEX idx_sessions_start; PRAGMA user_version = 1;"
+            try #require(sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK)
+        }
 
-        // The v2 index exists and the query plan uses it.
-        let plan = db.explainQueryPlan(
-            "SELECT id FROM sessions ORDER BY start_time DESC LIMIT 5;"
-        )
+        let upgraded = DatabaseManager(customPath: path)
+        #expect(upgraded.startupError == nil)
+        #expect(upgraded.userVersion() == 2)
+        #expect(upgraded.fetchSession(id: session.id)?.title == session.title)
+
+        let plan = upgraded.explainQueryPlan("SELECT id FROM sessions ORDER BY start_time DESC LIMIT 5;")
         #expect(plan.contains("idx_sessions_start"))
+
+        let reopened = DatabaseManager(customPath: path)
+        #expect(reopened.startupError == nil)
+        #expect(reopened.userVersion() == 2)
+    }
+
+    @Test func failedFirstMigrationRollsBackSchemaAndStopsBeforeV2() throws {
+        let directory = makeDirectory()
+        defer { remove(directory) }
+        let path = directory.appendingPathComponent("echo.sqlite").path
+
+        try withSQLite(at: path) { connection in
+            // The missing timestamp makes v1 fail after creating sessions and an index.
+            let sql = """
+                CREATE TABLE utterances (id TEXT PRIMARY KEY, session_id TEXT, text TEXT);
+                INSERT INTO utterances (id, text) VALUES ('existing-id', 'Keep this transcript');
+                """
+            try #require(sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK)
+        }
+
+        let db = DatabaseManager(customPath: path)
+        let failure = try #require(db.startupError)
+        #expect(failure.path == path)
+        #expect(failure.message.contains("v1"))
+        #expect(failure.message.contains("timestamp"))
+
+        try withSQLite(at: path) { connection in
+            let version = try sqliteInt("PRAGMA user_version;", in: connection)
+            let newObjects = try sqliteInt("""
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE name IN ('sessions', 'dictionary', 'idx_utterances_session', 'idx_sessions_start');
+                """, in: connection)
+            let existingRows = try sqliteInt("""
+                SELECT COUNT(*) FROM utterances WHERE id = 'existing-id' AND text = 'Keep this transcript';
+                """, in: connection)
+            #expect(version == 0)
+            #expect(newObjects == 0)
+            #expect(existingRows == 1)
+        }
+    }
+
+    @Test func failedSecondMigrationPreservesCommittedV1AndCanBeRetried() throws {
+        let directory = makeDirectory()
+        defer { remove(directory) }
+        let path = directory.appendingPathComponent("echo.sqlite").path
+
+        try withSQLite(at: path) { connection in
+            let sql = "CREATE TABLE idx_sessions_start (id INTEGER PRIMARY KEY);"
+            try #require(sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK)
+        }
+
+        let db = DatabaseManager(customPath: path)
+        let failure = try #require(db.startupError)
+        #expect(failure.message.contains("v2"))
+
+        try withSQLite(at: path) { connection in
+            let version = try sqliteInt("PRAGMA user_version;", in: connection)
+            let tables = try sqliteInt("""
+                SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'utterances', 'dictionary');
+                """, in: connection)
+            #expect(version == 1)
+            #expect(tables == 3)
+            try #require(sqlite3_exec(connection, "DROP TABLE idx_sessions_start;", nil, nil, nil) == SQLITE_OK)
+        }
+
+        let retried = DatabaseManager(customPath: path)
+        #expect(retried.startupError == nil)
+        #expect(retried.userVersion() == 2)
+    }
+
+    @Test func detectsPartialSchemaAlreadyMarkedV2() throws {
+        let (_, directory) = makeDatabase()
+        defer { remove(directory) }
+        let path = directory.appendingPathComponent("echo.sqlite").path
+
+        try withSQLite(at: path) { connection in
+            try #require(sqlite3_exec(connection, "DROP TABLE dictionary;", nil, nil, nil) == SQLITE_OK)
+        }
+
+        let db = DatabaseManager(customPath: path)
+        let failure = try #require(db.startupError)
+        #expect(failure.path == path)
+        #expect(failure.message.contains("dictionary"))
     }
 
     @Test func deleteEmptySessionsKeepsSessionsWithUtterances() {

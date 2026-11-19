@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- Meeting finalization waits for accepted speech segments to finish processing. Meeting Studio and the menu bar show when the transcript is being finalized, including during a normal quit.
+- Meetings check for the local speech executable before recording and surface transcription errors that occur during capture.
+- SQLite migrations commit schema changes together with their version marker. Startup reports incompatible or incomplete schemas so users can locate and recover the affected database.
+
 ## [1.4.0] - 2026-11-19
 
 ### Added

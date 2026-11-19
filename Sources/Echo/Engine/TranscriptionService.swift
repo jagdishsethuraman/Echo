@@ -12,9 +12,11 @@ import Foundation
 ///   drain before writing `endTime` or exporting.
 public final class TranscriptionService: @unchecked Sendable {
     public typealias Completion = @Sendable (String?) async -> Void
+    public typealias ReportingCompletion = @Sendable (Result<String, Error>) async -> Void
     public typealias Engine = @Sendable (Data) async throws -> String
     
     private let engine: Engine
+    private let checkEngineReadiness: @Sendable () throws -> Void
     private let semaphore: AsyncSemaphore
     
     private let stateLock = NSLock()
@@ -26,6 +28,7 @@ public final class TranscriptionService: @unchecked Sendable {
         tempDirectory: URL = AudioTempDirectory.rootURL
     ) {
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
+        self.checkEngineReadiness = { try runner.checkReadiness() }
         self.engine = { pcmData in
             let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
             let tempFile = tempDirectory.appendingPathComponent("echo_segment_\(UUID().uuidString).wav")
@@ -41,18 +44,40 @@ public final class TranscriptionService: @unchecked Sendable {
     /// Test seam: drive the queue with a closure instead of a child process.
     init(engine: @escaping Engine, maxConcurrent: Int = 1) {
         self.engine = engine
+        self.checkEngineReadiness = {}
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
+    }
+
+    /// Check that the configured engine executable is available before capture.
+    public func checkReadiness() throws {
+        try checkEngineReadiness()
     }
     
     /// Submit a segment for transcription. The completion runs after the engine
     /// returns, with `nil` when transcription failed.
     @discardableResult
     public func submit(pcmData: Data, completion: @escaping Completion) -> Task<Void, Never> {
+        submitReporting(pcmData: pcmData) { result in
+            await completion(try? result.get())
+        }
+    }
+
+    /// Submit a segment and deliver its transcript or the underlying error.
+    @discardableResult
+    public func submitReporting(
+        pcmData: Data,
+        completion: @escaping ReportingCompletion
+    ) -> Task<Void, Never> {
         begin()
         return Task {
             defer { finish() }
-            let text = try? await transcribe(pcmData: pcmData)
-            await completion(text)
+            let result: Result<String, Error>
+            do {
+                result = .success(try await transcribe(pcmData: pcmData))
+            } catch {
+                result = .failure(error)
+            }
+            await completion(result)
         }
     }
     

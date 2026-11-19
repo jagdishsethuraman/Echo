@@ -170,17 +170,15 @@ public final class AudioHub: @unchecked Sendable {
     }
     
     /// Unconditional teardown of all audio capture engines on application shutdown
-    public func stopAll() {
-        lock.lock()
-        micRetainCount = 0
-        systemRetainCount = 0
-        lock.unlock()
-        micEngine.stopCapture()
-        Task {
-            try? await systemCapture.stopCapture()
+    public func stopAll() async {
+        lock.withLock {
+            micRetainCount = 0
+            systemRetainCount = 0
         }
+        micEngine.stopCapture()
+        try? await systemCapture.stopCapture()
     }
-    
+
     // MARK: - Fan-out
     
     /// Internal so tests can exercise fan-out without opening a real device.
