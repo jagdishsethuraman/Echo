@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.4.0] - 2026-11-19
 
 ### Added
 - **Meeting History menu & session export (`DATA-02`, `UX-05`):** The menu bar now has a Meeting History submenu listing the 8 most recent sessions with **Copy Transcript**, **Export Markdown File…**, and **Delete Session…** actions, plus a **Delete Empty Sessions** retention command. Deleting a session cascades to its utterances. Added `DatabaseManager.fetchSession(id:)` and `AppCoordinator.exportSession(id:)`.
