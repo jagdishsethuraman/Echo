@@ -15,7 +15,7 @@ public final class PhononProcessRunner: @unchecked Sendable {
     
     public init(
         fermionPath: String? = nil,
-        device: String = ProcessInfo.processInfo.environment["ECHO_FERMION_DEVICE"] ?? "cpu",
+        device: String = EchoSettings.resolveFermionDevice(),
         timeout: TimeInterval = 30
     ) {
         self.fermionPath = fermionPath ?? EchoSettings.resolveFermionPath()

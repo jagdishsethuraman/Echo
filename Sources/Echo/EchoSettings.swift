@@ -10,6 +10,7 @@ import Foundation
 /// or through `ECHO_FERMION_PATH` when launching from a terminal.
 public enum EchoSettings {
     public static let fermionPathDefaultsKey = "echo.fermionPath"
+    public static let fermionDeviceDefaultsKey = "echo.fermionDevice"
     public static let exportDirectoryDefaultsKey = "echo.exportDirectory"
     
     private static var bundleIdentifier: String {
@@ -17,6 +18,24 @@ public enum EchoSettings {
     }
     
     // MARK: - Speech Engine
+    
+    /// Resolve the device passed to `fermion` (`cpu`, `mps`, `mlx`, `metal`).
+    ///
+    /// Resolution order: `UserDefaults.standard` string for `echo.fermionDevice`,
+    /// `ECHO_FERMION_DEVICE` environment variable, defaulting to `"cpu"`.
+    public static func resolveFermionDevice() -> String {
+        if let configured = UserDefaults.standard.string(forKey: fermionDeviceDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !configured.isEmpty {
+            return configured.lowercased()
+        }
+        if let fromEnv = ProcessInfo.processInfo.environment["ECHO_FERMION_DEVICE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !fromEnv.isEmpty {
+            return fromEnv.lowercased()
+        }
+        return "cpu"
+    }
     
     /// Resolve the `fermion` executable.
     ///

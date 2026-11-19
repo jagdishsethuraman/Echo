@@ -10,13 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Meeting History menu (`DATA-02`):** The menu bar now has a Meeting History submenu listing the 8 most recent sessions with **Copy Transcript** and **Delete Session…** actions, plus a **Delete Empty Sessions** retention command. Deleting a session cascades to its utterances.
+- **Meeting History menu & session export (`DATA-02`, `UX-05`):** The menu bar now has a Meeting History submenu listing the 8 most recent sessions with **Copy Transcript**, **Export Markdown File…**, and **Delete Session…** actions, plus a **Delete Empty Sessions** retention command. Deleting a session cascades to its utterances. Added `DatabaseManager.fetchSession(id:)` and `AppCoordinator.exportSession(id:)`.
+- **Configurable Fermion device (`BUILD-04`):** Added `EchoSettings.resolveFermionDevice()` supporting `defaults write com.ragavij.echo echo.fermionDevice <cpu|mps|mlx>` and `ECHO_FERMION_DEVICE` overrides.
 
 ### Changed
 - **Off-main SQLite persistence (`DATA-02`):** Live writes from transcription and dictation now go through the database's serial utility queue (`saveSessionAndUtteranceAsync`), so SQLite I/O no longer blocks the main actor. Session metadata and its utterance are persisted in one queue hop.
 - **Schema migrations and retention (`DATA-02`):** `PRAGMA user_version` now tracks a v2 migration that adds `idx_sessions_start` for history queries. Prepare/step failures route through a single `reportError` path and surface through `onError` instead of being print-only.
+- **Intrinsic HUD width measurement (`UX-03`):** Dynamic pill HUD width now calculates typographic dimensions via `(text as NSString).size(withAttributes:)` rather than estimating character count multipliers. Measured widths are quantized into 30pt buckets with an expanded 720pt cap to prevent truncation with wide glyphs, emoji, and CJK text.
+- **Export menu behavior (`UX-05`):** Renamed menu action to "Export Current Session to Markdown…", guarded against empty/nil active sessions, and surface informational alert when attempting to export without an active transcript.
 
 ### Fixed
+- **Word-boundary notes extraction (`UX-06`):** Decision and action item extraction in `MeetingNotesExtractor` now precompiles `NSRegularExpression`s with `\b` word boundaries and sorts triggers by length descending, preventing substring false positives (e.g. `"unapproved"`, `"disagreed"`). Added pre- and post-trigger negation filtering and passive-voice context preservation.
 - **Empty session rows (`DATA-03`):** Launch no longer creates and persists an empty "Echo Speech Stream" session. The transient stream is created lazily on the first dictated or transcribed utterance, and empty/stale open sessions left by older builds are pruned at startup.
 - **Non-destructive clipboard injection (`INJ-03`):** Accessibility injection now runs before any clipboard write, so a successful AX insert leaves the user's clipboard untouched. When the paste or typing fallbacks are needed, the full pasteboard contents are snapshotted and restored after success (`restorePreviousClipboard` now defaults to `true`). If every fallback fails, the transcript stays on the clipboard for a manual paste.
 - **Global shortcuts double-firing (`INJ-05`):** The `⇧⌘E/D/C/R` chords are now owned by the global event monitor when Echo is in the background and by the menu key equivalents when Echo is frontmost. Previously both paths ran while the app was focused, so `⇧⌘D` and `⇧⌘R` started and immediately stopped.

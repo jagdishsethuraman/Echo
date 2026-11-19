@@ -306,4 +306,23 @@ struct DatabaseManagerTests {
         #expect(utterances.count == 1)
         #expect(utterances.first?.text == "async utterance")
     }
+
+    @Test func fetchSessionByIdReturnsTargetSession() async {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+        
+        let session = MeetingSession(title: "Architecture Sync")
+        db.saveSession(session)
+        
+        let fetched = db.fetchSession(id: session.id)
+        #expect(fetched?.id == session.id)
+        #expect(fetched?.title == "Architecture Sync")
+        
+        let fetchedAsync = await db.fetchSessionAsync(id: session.id)
+        #expect(fetchedAsync?.id == session.id)
+        #expect(fetchedAsync?.title == "Architecture Sync")
+        
+        let nonExistent = db.fetchSession(id: UUID())
+        #expect(nonExistent == nil)
+    }
 }

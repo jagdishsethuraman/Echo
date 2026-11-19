@@ -109,29 +109,44 @@ public final class FloatingPillPanel: NSPanel {
         })
     }
     
-    private func targetWidth(for state: PillState) -> CGFloat {
+    public static func measureTextWidth(_ text: String, font: NSFont = .systemFont(ofSize: 12, weight: .medium)) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let size = (text as NSString).size(withAttributes: attributes)
+        return ceil(size.width)
+    }
+    
+    public static func targetWidth(for state: PillState) -> CGFloat {
         switch state {
         case .idle:
             return 240
         case .listening(_, let livePartial, let isLocked, _):
-            let baseWidth: CGFloat = isLocked ? 410 : 370
+            let minWidth: CGFloat = isLocked ? 410 : 370
+            let chromeWidth: CGFloat = isLocked ? 290 : 230
             if livePartial.isEmpty {
-                return baseWidth
+                return minWidth
             } else {
-                // Quantize text width in 40pt buckets to avoid flutter on every letter
-                let rawWidth = baseWidth + CGFloat(livePartial.count) * 7.0
-                let quantized = ceil(rawWidth / 40.0) * 40.0
-                return min(640, max(baseWidth, quantized))
+                // Typographic measurement via NSAttributedString, quantized in 30pt buckets (UX-03)
+                let textW = measureTextWidth(livePartial)
+                let rawWidth = max(minWidth, chromeWidth + textW)
+                let quantized = ceil(rawWidth / 30.0) * 30.0
+                return min(720, max(minWidth, quantized))
             }
         case .transcribing:
             return 280
         case .success(let preview):
-            let rawWidth = 280 + CGFloat(preview.count) * 6.5
+            let text = preview.isEmpty ? "Transcribed" : preview
+            let textW = measureTextWidth(text)
+            let rawWidth = max(280, 56 + textW + 28)
             let quantized = ceil(rawWidth / 30.0) * 30.0
-            return min(560, max(280, quantized))
+            return min(720, max(280, quantized))
         case .error:
             return 360
         }
+    }
+    
+    private func targetWidth(for state: PillState) -> CGFloat {
+        return Self.targetWidth(for: state)
     }
     
     /// Target screen: chooses the monitor containing the mouse pointer, falling back to main display (UX-03)

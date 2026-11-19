@@ -483,7 +483,33 @@ public final class AppCoordinator: ObservableObject {
     }
 
     public func exportLastMeetingMarkdown() {
-        let session = meetingCoordinator.activeSession ?? MeetingSession(title: "Echo Meeting Session")
+        guard let session = meetingCoordinator.activeSession, !session.segments.isEmpty else {
+            statusMessage = "No active meeting session to export"
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "No Active Meeting"
+            alert.informativeText = "There is no recorded active meeting session to export. To export previous meetings, use the Meeting History menu."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        _ = exportSessionMarkdown(session)
+    }
+    
+    @discardableResult
+    public func exportSession(id: UUID) -> URL? {
+        guard let session = DatabaseManager.shared.fetchSession(id: id) else {
+            statusMessage = "Session not found"
+            return nil
+        }
+        let segments = DatabaseManager.shared.fetchUtterances(sessionId: id)
+        var fullSession = session
+        fullSession.segments = segments
+        return exportSessionMarkdown(fullSession)
+    }
+    
+    @discardableResult
+    public func exportSessionMarkdown(_ session: MeetingSession) -> URL? {
         let md = session.exportMarkdown()
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -491,15 +517,17 @@ public final class AppCoordinator: ObservableObject {
         
         do {
             let directory = try EchoSettings.ensureExportDirectory()
-            let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let timestamp = ISO8601DateFormatter().string(from: session.startTime).replacingOccurrences(of: ":", with: "-")
             let filename = "echo_meeting_\(timestamp).md"
             let url = directory.appendingPathComponent(filename)
             try md.write(to: url, atomically: true, encoding: .utf8)
-            statusMessage = "Exported to \(url.path)"
+            statusMessage = "Exported to \(url.lastPathComponent)"
             print("Meeting exported to clipboard and \(url.path)")
+            return url
         } catch {
             statusMessage = "Export failed: \(error.localizedDescription)"
             presentExportError(error)
+            return nil
         }
     }
     

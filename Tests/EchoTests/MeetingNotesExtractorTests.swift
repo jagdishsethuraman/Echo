@@ -75,6 +75,54 @@ struct MeetingNotesExtractorTests {
         #expect(notes.decisions.count == 1)
         #expect(notes.actionItems.count == 1)
     }
+
+    @Test func wordBoundariesPreventSubstringFalsePositives() {
+        let segments = [
+            TranscriptSegment(speaker: .meeting, text: "The team strongly disagreed on the proposed plan.", durationSeconds: 3.0),
+            TranscriptSegment(speaker: .you, text: "The document is currently unapproved by compliance.", durationSeconds: 2.5),
+            TranscriptSegment(speaker: .meeting, text: "I saw an ill patient today.", durationSeconds: 2.0)
+        ]
+        
+        let decisions = MeetingNotesExtractor.extractDecisions(from: segments)
+        #expect(decisions.isEmpty)
+        
+        let actions = MeetingNotesExtractor.extractActionItems(from: segments)
+        #expect(actions.isEmpty)
+    }
+
+    @Test func filtersNegatedDecisionsAndActions() {
+        let segments = [
+            TranscriptSegment(speaker: .you, text: "We have not decided on the launch date yet.", durationSeconds: 3.0),
+            TranscriptSegment(speaker: .meeting, text: "We never agreed to increase the scope.", durationSeconds: 2.8),
+            TranscriptSegment(speaker: .you, text: "We will not deploy the build tonight.", durationSeconds: 2.5),
+            TranscriptSegment(speaker: .meeting, text: "I don't think we need to refactor that module.", durationSeconds: 3.0)
+        ]
+        
+        let decisions = MeetingNotesExtractor.extractDecisions(from: segments)
+        #expect(decisions.isEmpty)
+        
+        let actions = MeetingNotesExtractor.extractActionItems(from: segments)
+        #expect(actions.isEmpty)
+    }
+
+    @Test func preservesFullSentenceForPassiveVoiceDecisions() {
+        let segments = [
+            TranscriptSegment(speaker: .meeting, text: "The new architecture was approved by engineering leadership.", durationSeconds: 3.5)
+        ]
+        
+        let decisions = MeetingNotesExtractor.extractDecisions(from: segments)
+        #expect(decisions.count == 1)
+        #expect(decisions[0] == "The new architecture was approved by engineering leadership.")
+    }
+
+    @Test func respectsExtractionLimits() {
+        let segments = (1...10).map { i in
+            TranscriptSegment(speaker: .you, text: "We decided to implement feature number \(i).", durationSeconds: 1.0)
+        }
+        
+        let decisions = MeetingNotesExtractor.extractDecisions(from: segments, limit: 3)
+        #expect(decisions.count == 3)
+    }
     
     @Test func formatsMarkdownCorrectly() {
         let decisions = ["Keep local SQLite storage.", "Release version 1.3."]

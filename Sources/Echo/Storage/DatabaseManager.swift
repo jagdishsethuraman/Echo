@@ -432,6 +432,52 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
     
+    public func fetchSessionAsync(id: UUID) async -> MeetingSession? {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                let session = self.fetchSession(id: id)
+                continuation.resume(returning: session)
+            }
+        }
+    }
+    
+    public func fetchSession(id: UUID) -> MeetingSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let sql = "SELECT id, title, start_time, end_time, summary_markdown FROM sessions WHERE id = ? LIMIT 1;"
+        var stmt: OpaquePointer?
+        var result: MeetingSession? = nil
+        
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, id.uuidString)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                if let titleCString = sqlite3_column_text(stmt, 1) {
+                    let title = String(cString: titleCString)
+                    let startTime = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2))
+                    var endTime: Date? = nil
+                    if sqlite3_column_type(stmt, 3) != SQLITE_NULL {
+                        endTime = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 3))
+                    }
+                    var summary: String? = nil
+                    if let sumCString = sqlite3_column_text(stmt, 4) {
+                        summary = String(cString: sumCString)
+                    }
+                    result = MeetingSession(
+                        id: id,
+                        title: title,
+                        startTime: startTime,
+                        endTime: endTime,
+                        segments: [],
+                        summaryMarkdown: summary
+                    )
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        return result
+    }
+    
     public func fetchRecentSessions(limit: Int = 20) -> [MeetingSession] {
         lock.lock()
         defer { lock.unlock() }

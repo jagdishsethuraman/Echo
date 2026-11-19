@@ -183,7 +183,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         
         // Export to Markdown
         let exportItem = NSMenuItem(
-            title: "Copy Notes as Markdown",
+            title: "Export Current Session to Markdown…",
             action: #selector(exportLastMeeting),
             keyEquivalent: ""
         )
@@ -277,6 +277,15 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
                 copy.representedObject = session.id
                 submenu.addItem(copy)
 
+                let export = NSMenuItem(
+                    title: "Export Markdown File…",
+                    action: #selector(exportHistorySession(_:)),
+                    keyEquivalent: ""
+                )
+                export.target = self
+                export.representedObject = session.id
+                submenu.addItem(export)
+
                 let delete = NSMenuItem(
                     title: "Delete Session…",
                     action: #selector(deleteHistorySession(_:)),
@@ -313,6 +322,13 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    @objc private func exportHistorySession(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        Task { @MainActor in
+            coordinator.exportSession(id: id)
+        }
     }
 
     @objc private func deleteHistorySession(_ sender: NSMenuItem) {

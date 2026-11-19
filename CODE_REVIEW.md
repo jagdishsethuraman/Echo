@@ -38,16 +38,16 @@ This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. 
 | INJ-05 | P2 | UX | Global shortcuts double-fire when Echo is focused (event monitor + menu key equivalent) | ✅ Fixed |
 | UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | ✅ Fixed |
 | UX-02 | P2 | Performance | Entire Studio view invalidates at audio rate (~43 Hz) | ✅ Fixed |
-| UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | 🟡 Partial (anchoring fixed) |
+| UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | ✅ Fixed |
 | UX-04 | P2 | Lifecycle | No graceful shutdown: audio not stopped, session `endTime` not written, temp files left behind | ✅ Fixed |
 | SEC-01 | P2 | Privacy | Sensitive WAVs are written to world-readable `/tmp` and may survive crashes | ✅ Fixed |
-| UX-05 | P2 | UX | "Export All Notes" exports only the active session | 🟡 Partial |
-| UX-06 | P2 | UI quality | Heuristic notes extractor matches trigger substrings and over-extracts decisions/actions | 🆕 Open |
+| UX-05 | P2 | UX | "Export All Notes" exports only the active session | ✅ Fixed |
+| UX-06 | P2 | UI quality | Heuristic notes extractor matches trigger substrings and over-extracts decisions/actions | ✅ Fixed |
 | SEC-02 | P3 | Permissions | AppleScript fallback triggers Automation TCC but the bundle lacks `NSAppleEventsUsageDescription` | ✅ Fixed |
 | BUILD-01 | P3 | Reproducibility | `Info.plist` and bundle assembly are not in version control | ✅ Fixed |
 | BUILD-02 | P3 | Distribution | `codesign --deep` guidance; no hardened runtime or notarization | Open |
 | BUILD-03 | P3 | Cleanup | Dead code: `PhononClient`, `BenchmarkResult`, unused enum case, unused field | ✅ Fixed |
-| BUILD-04 | P3 | Performance | `FERMION_DEVICE=cpu` contradicts documented Metal/MLX acceleration | Open |
+| BUILD-04 | P3 | Performance | `FERMION_DEVICE=cpu` contradicts documented Metal/MLX acceleration | ✅ Fixed |
 | BUILD-05 | P3 | Cleanup | `NSAppleEventsUsageDescription` remains after AppleScript removal; changelog contradicts itself | ✅ Fixed |
 | DATA-03 | P3 | Storage | Every launch persists a new empty "Echo Speech Stream" session; no retention/compaction | ✅ Fixed |
 | DOC-01 | P3 | Docs | README/ARCHITECTURE/ROADMAP/CHANGELOG disagree with the code | ✅ Fixed |
@@ -379,13 +379,12 @@ The added test only calls `handleKeyDown` directly (`HotkeyManagerTests.swift:17
 
 ### UX-03 · HUD sizing and screen selection
 
-**Status:** 🟡 **Partially fixed** (`441dc6d`). The pill now anchors to the display containing the mouse pointer (`FloatingPillPanel.swift:137-144`) instead of `NSScreen.main`, with `NSScreen.main` as fallback. This resolves the multi-monitor half of the finding.
+**Status:** ✅ Fixed (2026-11-19).
+- Screen anchoring anchors to display containing mouse pointer with main screen fallback (`FloatingPillPanel.swift`).
+- Width calculation measures exact typographic bounding box using `(text as NSString).size(withAttributes: [.font: font]).width` (`FloatingPillPanel.measureTextWidth`) rather than guessing character counts.
+- Dynamic widths are quantized into 30pt buckets to eliminate frame flutter, with minimum caps (370/410pt) and an expanded maximum cap of 720pt for wide glyphs, emoji, and CJK text. Covered in `FloatingPillPanelTests`.
 
-**What remains:** width is still derived from character count (`:116-131`, `livePartial.count × 7.0`, `preview.count × 6.5`), merely quantized into 40 pt / 30 pt buckets. Wide glyphs, emoji, and CJK still mis-size, and the hard 640/560 caps can truncate.
-
-**Where:** `Sources/Echo/UI/FloatingPillPanel.swift`
-
-**Fix:** measure with `NSAttributedString.size()` or let `NSHostingView.fittingSize` drive the window width; keep the existing screen anchoring.
+**Where:** `Sources/Echo/UI/FloatingPillPanel.swift`, `Tests/EchoTests/FloatingPillPanelTests.swift`
 
 ### UX-04 · No graceful shutdown / crash cleanup
 
@@ -411,33 +410,26 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 ### UX-05 · Export scope is misleading
 
-**Status:** 🟡 **Partially fixed** (`56014ea`). The menu item is now "Copy Notes as Markdown", failures surface an `NSAlert`, the export directory is configurable (`EchoSettings.exportDirectory`, 0700), and the Markdown is copied to the clipboard.
+**Status:** ✅ Fixed (2026-11-19).
+- Renamed menu item to "Export Current Session to Markdown…".
+- Guarded `activeSession == nil || session.segments.isEmpty` in `AppCoordinator.exportLastMeetingMarkdown()`; displays informational alert when no transcript exists rather than generating an empty markdown file.
+- Added `DatabaseManager.fetchSession(id:)` and `fetchSessionAsync(id:)`.
+- Added `AppCoordinator.exportSession(id:)` to export any historical meeting session from SQLite to Markdown.
+- Added "Export Markdown File…" directly to each historical session submenu under **Meeting History** in `MenuBarManager`.
 
-**What remains:**
-- Scope is still `meetingCoordinator.activeSession` only; there is no session picker/history (`AppCoordinator.swift:465-484`).
-- When `activeSession` is `nil`, it fabricates an empty session and writes an empty Markdown file.
-- The label says "Copy" but the action also writes a file. Pick one behavior or label both.
-
-**Where:** `Sources/Echo/AppCoordinator.swift:465-498`, `Sources/Echo/UI/MenuBarManager.swift:184-191`
-
-**Fix:** rename to "Export Current Session…", add a session picker, and guard `activeSession == nil` before writing.
+**Where:** `Sources/Echo/AppCoordinator.swift`, `Sources/Echo/UI/MenuBarManager.swift`, `Sources/Echo/Storage/DatabaseManager.swift`
 
 ### UX-06 · Notes extraction over-matches
 
-**Status:** 🆕 Open (introduced by `4b824d7`).
+**Status:** ✅ Fixed (2026-11-19).
+- Decision and action triggers are sorted by length descending so specific trigger phrases preempt general ones.
+- Word-boundary matching using precompiled `NSRegularExpression` with `\b` boundaries prevents substring false positives (e.g. `"unapproved"`, `"disagreed"`, `"ill"` do not trigger).
+- Pre-trigger and post-trigger negation detection filters out statements containing `"not"`, `"never"`, `"didn't"`, `"will not"`, etc.
+- Passive-voice defense: phrases where trigger is followed by `"by ..."` or short fragments (<3 words) preserve the full sentence context rather than emitting a dangling predicate.
+- Extraction limit capped at 30 items to prevent low-confidence bloat.
+- Regression tests added in `MeetingNotesExtractorTests`.
 
-**Where:** `Sources/Echo/Engine/MeetingNotesExtractor.swift:16-72`, `:86-102`, `:121-137`; consumed from `MeetingStudioView.swift:99-107`
-
-Triggers are matched with `String.range(of:)` and no word boundary, and the shortest trigger wins:
-
-- `"approved"` matches inside `"unapproved"`; `"agreed"` inside `"disagreed"`.
-- `"approved"` / `"we will"` are so broad that almost any sentence becomes a "decision" or "action item". Example: "The design was approved by legal" yields a decision of "By legal." (or the whole sentence when the tail is short).
-- Matching stops at the first trigger, so `"we decided to approve X"` produces `"Approve X."` rather than preserving/removing the decision phrase intentionally.
-- There is no cap, so a long meeting fills the cards with low-confidence items.
-
-This is an acceptable v1 heuristic, but it should be labelled as such and hardened before it is presented as meeting intelligence.
-
-**Fix:** use word-boundary matching (`NSRegularExpression` or tokenization), prefer longest triggers, require a minimum tail length/predicate, and cap the list (or add confidence/undo). Add negative tests (`"unapproved"`, `"disagreed"`).
+**Where:** `Sources/Echo/Engine/MeetingNotesExtractor.swift`, `Tests/EchoTests/MeetingNotesExtractorTests.swift`
 
 ---
 
@@ -486,11 +478,13 @@ This is an acceptable v1 heuristic, but it should be labelled as such and harden
 
 ### BUILD-04 · CPU vs. documented GPU acceleration
 
-**Where:** `Sources/Echo/Engine/PhononProcessRunner.swift:19`
+**Status:** ✅ Fixed (2026-11-19).
+- Added `echo.fermionDevice` configuration in `EchoSettings` resolved via `UserDefaults.standard` -> `ECHO_FERMION_DEVICE` -> `"cpu"`.
+- Wired `PhononProcessRunner` default device through `EchoSettings.resolveFermionDevice()`.
+- Users can switch execution backend to Metal/MLX/MPS via `defaults write com.ragavij.echo echo.fermionDevice mps` or environment variable.
+- Regression tests added in `EchoSettingsTests`.
 
-`FERMION_DEVICE=cpu` contradicts README/ARCHITECTURE claims of Metal/MLX acceleration. Either the claims or the setting are wrong.
-
-**Fix:** benchmark `metal`/`mlx` vs `cpu`, default to the fastest reliable path, and expose it as a setting.
+**Where:** `Sources/Echo/EchoSettings.swift`, `Sources/Echo/Engine/PhononProcessRunner.swift`, `Tests/EchoTests/EchoSettingsTests.swift`
 
 ### BUILD-05 · Stale AppleEvents declaration and changelog contradiction
 

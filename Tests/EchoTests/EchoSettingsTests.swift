@@ -7,10 +7,12 @@ struct EchoSettingsTests {
     /// Tracks the previous values so each test leaves the user's defaults alone.
     private struct DefaultsBackup {
         let fermionPath: String?
+        let fermionDevice: String?
         let exportDirectory: String?
         
         init(defaults: UserDefaults) {
             fermionPath = defaults.string(forKey: EchoSettings.fermionPathDefaultsKey)
+            fermionDevice = defaults.string(forKey: EchoSettings.fermionDeviceDefaultsKey)
             exportDirectory = defaults.string(forKey: EchoSettings.exportDirectoryDefaultsKey)
         }
         
@@ -19,6 +21,11 @@ struct EchoSettingsTests {
                 defaults.set(fermionPath, forKey: EchoSettings.fermionPathDefaultsKey)
             } else {
                 defaults.removeObject(forKey: EchoSettings.fermionPathDefaultsKey)
+            }
+            if let fermionDevice {
+                defaults.set(fermionDevice, forKey: EchoSettings.fermionDeviceDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: EchoSettings.fermionDeviceDefaultsKey)
             }
             if let exportDirectory {
                 defaults.set(exportDirectory, forKey: EchoSettings.exportDirectoryDefaultsKey)
@@ -108,5 +115,23 @@ struct EchoSettingsTests {
     @Test func fermionHintMentionsBothOverrideMechanisms() {
         #expect(EchoSettings.fermionPathHint.contains(EchoSettings.fermionPathDefaultsKey))
         #expect(EchoSettings.fermionPathHint.contains("ECHO_FERMION_PATH"))
+    }
+
+    @Test func fermionDeviceHonorsUserDefaultAndTrims() {
+        let defaults = UserDefaults.standard
+        let backup = DefaultsBackup(defaults: defaults)
+        defer { backup.restore(defaults: defaults) }
+        
+        defaults.removeObject(forKey: EchoSettings.fermionDeviceDefaultsKey)
+        // Without default or env, falls back to cpu
+        if ProcessInfo.processInfo.environment["ECHO_FERMION_DEVICE"] == nil {
+            #expect(EchoSettings.resolveFermionDevice() == "cpu")
+        }
+        
+        defaults.set("  MPS  ", forKey: EchoSettings.fermionDeviceDefaultsKey)
+        #expect(EchoSettings.resolveFermionDevice() == "mps")
+        
+        defaults.set("MLX", forKey: EchoSettings.fermionDeviceDefaultsKey)
+        #expect(EchoSettings.resolveFermionDevice() == "mlx")
     }
 }
