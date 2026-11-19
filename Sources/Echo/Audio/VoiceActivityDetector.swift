@@ -12,11 +12,14 @@ public final class VoiceActivityDetector: @unchecked Sendable {
     private var preRollBuffer = Data()
     private var silenceFramesCount: Int = 0
     private var isSpeaking = false
+    private var speechStartTime: Date?
     private let lock = NSLock()
     
     /// Called synchronously on the thread that detected the segment boundary.
     /// Consumers that need to do expensive work should hand it off themselves.
     public var onSpeechSegmentCompleted: ((Data, Double) -> Void)?
+    /// Includes the capture onset timestamp recorded when speech first crossed threshold.
+    public var onSpeechSegmentWithTimestampCompleted: ((Data, Double, Date) -> Void)?
     
     public init(
         energyThreshold: Float = 0.08,
@@ -36,7 +39,7 @@ public final class VoiceActivityDetector: @unchecked Sendable {
     
     /// Process incoming 16kHz Int16 mono PCM chunk
     public func processChunk(pcmData: Data, rmsEnergy: Float) {
-        var completed: (Data, Double)?
+        var completed: (Data, Double, Date)?
         
         lock.lock()
         if rmsEnergy >= energyThreshold {
@@ -44,6 +47,8 @@ public final class VoiceActivityDetector: @unchecked Sendable {
             // utterance is not clipped.
             if !isSpeaking {
                 isSpeaking = true
+                let preRollDuration = Double(preRollBuffer.count / 2) / Double(sampleRate)
+                speechStartTime = Date().addingTimeInterval(-preRollDuration)
                 speechBuffer = preRollBuffer
                 preRollBuffer.removeAll(keepingCapacity: true)
             }
@@ -81,12 +86,13 @@ public final class VoiceActivityDetector: @unchecked Sendable {
         // Deliver outside the lock so consumers can call back into the detector.
         if let completed {
             onSpeechSegmentCompleted?(completed.0, completed.1)
+            onSpeechSegmentWithTimestampCompleted?(completed.0, completed.1, completed.2)
         }
     }
     
     /// Force flush any active speech buffer (e.g. when meeting ends)
     public func flush() {
-        var completed: (Data, Double)?
+        var completed: (Data, Double, Date)?
         
         lock.lock()
         completed = takeSegmentLocked()
@@ -94,6 +100,7 @@ public final class VoiceActivityDetector: @unchecked Sendable {
         
         if let completed {
             onSpeechSegmentCompleted?(completed.0, completed.1)
+            onSpeechSegmentWithTimestampCompleted?(completed.0, completed.1, completed.2)
         }
     }
     
@@ -104,25 +111,29 @@ public final class VoiceActivityDetector: @unchecked Sendable {
         preRollBuffer.removeAll(keepingCapacity: true)
         silenceFramesCount = 0
         isSpeaking = false
+        speechStartTime = nil
         lock.unlock()
     }
     
     /// Finish the current segment. Must be called with `lock` held.
-    private func takeSegmentLocked() -> (Data, Double)? {
+    private func takeSegmentLocked() -> (Data, Double, Date)? {
         guard !speechBuffer.isEmpty else {
             isSpeaking = false
             silenceFramesCount = 0
+            speechStartTime = nil
             return nil
         }
         
         let duration = Double(speechBuffer.count / 2) / Double(sampleRate)
         let completedData = speechBuffer
+        let timestamp = speechStartTime ?? Date()
         speechBuffer.removeAll(keepingCapacity: true)
         isSpeaking = false
         silenceFramesCount = 0
+        speechStartTime = nil
         
         // Below minimum duration (noise pop) - discard.
         guard duration >= minSpeechDurationSeconds else { return nil }
-        return (completedData, duration)
+        return (completedData, duration, timestamp)
     }
 }

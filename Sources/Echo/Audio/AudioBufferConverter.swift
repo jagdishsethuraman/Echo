@@ -125,6 +125,13 @@ public enum AudioBufferConverter {
     private static let converterLock = NSLock()
     private static var converters: [String: AVAudioConverter] = [:]
     
+    /// Reset cached converters to purge any lingering filter state between capture sessions.
+    public static func resetConverters() {
+        converterLock.lock()
+        defer { converterLock.unlock() }
+        converters.removeAll()
+    }
+    
     /// Convert a Float32 PCM buffer into little-endian 16-bit PCM bytes.
     public static func int16PCM(from buffer: AVAudioPCMBuffer) -> Data? {
         guard let channelData = buffer.floatChannelData else { return nil }

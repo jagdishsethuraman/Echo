@@ -173,15 +173,11 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             self.feedAudio(self.micVAD, pcmData: pcmData, level: level, sessionID: sessionID)
         }
         
-        // System loopback: ScreenCaptureKit hands us raw CMSampleBuffers that
-        // must be decoded and resampled before the VAD can slice them.
-        systemBufferToken = dualChannel.hub.addSystemBufferObserver { [weak self] sampleBuffer in
+        // System loopback: ScreenCaptureKit decoded & resampled in a single pass.
+        // Uses the converted 16 kHz mono buffer directly without re-running through AVAudioConverter.
+        systemBufferToken = dualChannel.hub.addSystemPCMBufferObserver { [weak self] converted, level in
             guard let self, let sessionID = self.audioSessionID else { return }
-            guard let converted = AudioBufferConverter.pcmBuffer(from: sampleBuffer),
-                  let pcmData = AudioBufferConverter.int16PCM(from: converted) else {
-                return
-            }
-            let level = AudioBufferConverter.calculateRMS(from: converted)
+            guard let pcmData = AudioBufferConverter.int16PCM(from: converted) else { return }
             self.feedAudio(self.systemVAD, pcmData: pcmData, level: level, sessionID: sessionID)
         }
         
@@ -205,21 +201,21 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             }
         }
         
-        micVAD.onSpeechSegmentCompleted = { [weak self] pcmData, duration in
-            self?.enqueueSegment(track: .you, pcmData: pcmData, duration: duration)
+        micVAD.onSpeechSegmentWithTimestampCompleted = { [weak self] pcmData, duration, timestamp in
+            self?.enqueueSegment(track: .you, pcmData: pcmData, duration: duration, timestamp: timestamp)
         }
         
-        systemVAD.onSpeechSegmentCompleted = { [weak self] pcmData, duration in
-            self?.enqueueSegment(track: .meeting, pcmData: pcmData, duration: duration)
+        systemVAD.onSpeechSegmentWithTimestampCompleted = { [weak self] pcmData, duration, timestamp in
+            self?.enqueueSegment(track: .meeting, pcmData: pcmData, duration: duration, timestamp: timestamp)
         }
     }
     
     /// Bind a segment to the recording that produced it before the engine runs.
     @discardableResult
-    func enqueueSegment(track: SpeakerTrack, pcmData: Data, duration: Double) -> Task<Void, Never>? {
+    func enqueueSegment(track: SpeakerTrack, pcmData: Data, duration: Double, timestamp: Date = Date()) -> Task<Void, Never>? {
         pipelineLock.withLock {
             guard let work = audioSession else { return nil }
-            let segment = TaggedAudioSegment(track: track, pcmData: pcmData, durationSeconds: duration)
+            let segment = TaggedAudioSegment(track: track, timestamp: timestamp, pcmData: pcmData, durationSeconds: duration)
             if collectingStartupAudio {
                 startupAudio.append(segment)
                 return nil
@@ -261,6 +257,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
     private func append(_ segment: TranscriptSegment, sessionID: UUID, isDictation: Bool) async {
         guard var session = activeSession, session.id == sessionID, session.endTime == nil else { return }
         session.segments.append(segment)
+        session.segments.sort { $0.timestamp < $1.timestamp }
         activeSession = session
         onSessionUpdated?(session)
         await database.saveSessionAndUtteranceAsync(session, segment: segment, isDictation: isDictation)

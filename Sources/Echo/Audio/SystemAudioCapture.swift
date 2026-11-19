@@ -9,12 +9,18 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
     private let callbackLock = NSLock()
     
     private var _onSystemAudioBuffer: ((CMSampleBuffer) -> Void)?
+    private var _onSystemPCMBuffer: ((AVAudioPCMBuffer, Float) -> Void)?
     private var _onSystemVolumeLevel: ((Float) -> Void)?
     private var _onCaptureFailed: ((Error) -> Void)?
     
     public var onSystemAudioBuffer: ((CMSampleBuffer) -> Void)? {
         get { callbackLock.withLock { _onSystemAudioBuffer } }
         set { callbackLock.withLock { _onSystemAudioBuffer = newValue } }
+    }
+
+    public var onSystemPCMBuffer: ((AVAudioPCMBuffer, Float) -> Void)? {
+        get { callbackLock.withLock { _onSystemPCMBuffer } }
+        set { callbackLock.withLock { _onSystemPCMBuffer = newValue } }
     }
     
     public var onSystemVolumeLevel: ((Float) -> Void)? {
@@ -52,6 +58,7 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
     
     /// Start capturing system audio via ScreenCaptureKit
     public func startCapture() async throws {
+        AudioBufferConverter.resetConverters()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         guard let display = content.displays.first else {
             throw NSError(domain: "EchoAudio", code: 2, userInfo: [NSLocalizedDescriptionKey: "No display found for audio capture."])
@@ -72,6 +79,7 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
     }
     
     public func stopCapture() async throws {
+        AudioBufferConverter.resetConverters()
         let activeStream: SCStream? = stateQueue.sync {
             let s = self.stream
             self.stream = nil
@@ -93,11 +101,12 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
         
         onSystemAudioBuffer?(sampleBuffer)
         
-        // Compute VU energy accurately via canonical PCM conversion rather than
-        // assuming raw Int16 samples from ScreenCaptureKit (which can be Float32).
-        if onSystemVolumeLevel != nil {
+        // Single-pass conversion: decode & resample once per incoming CMSampleBuffer.
+        // Shares the converted 16kHz mono buffer and calculated RMS without double-advancing the converter.
+        if onSystemPCMBuffer != nil || onSystemVolumeLevel != nil {
             if let converted = AudioBufferConverter.pcmBuffer(from: sampleBuffer) {
                 let level = AudioBufferConverter.calculateRMS(from: converted)
+                onSystemPCMBuffer?(converted, level)
                 onSystemVolumeLevel?(level)
             }
         }

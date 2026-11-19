@@ -110,4 +110,17 @@ struct AudioHubTests {
         #expect(recorder.snapshot == ["Audio stream stalled"])
         #expect(hub.lastError?.localizedDescription == "Audio stream stalled")
     }
+
+    @Test func systemPCMBufferFansOutToObservers() {
+        let hub = AudioHub()
+        let recorder = ValueRecorder<Float>()
+        let buffer = makeBuffer()
+        
+        hub.addSystemPCMBufferObserver { buf, level in
+            recorder.record(level)
+        }
+        hub.broadcastSystemPCMBuffer(buffer, level: 0.75)
+        
+        #expect(recorder.snapshot == [0.75])
+    }
 }

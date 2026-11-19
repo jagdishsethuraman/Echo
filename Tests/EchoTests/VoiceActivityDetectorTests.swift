@@ -250,4 +250,33 @@ struct VoiceActivityDetectorTests {
         // 150 ms pre-roll + 300 ms speech + 200 ms trailing silence.
         #expect(abs((segment?.duration ?? 0) - 0.65) < 0.001)
     }
+
+    @Test func captureBoundaryTimestampIsRecordedAtSpeechOnset() async {
+        let vad = VoiceActivityDetector(
+            energyThreshold: 0.1,
+            silenceThresholdSeconds: 0.21,
+            minSpeechDurationSeconds: 0.1,
+            preRollSeconds: 0.1
+        )
+        let chunk = chunk()
+        var recordedTimestamp: Date?
+        vad.onSpeechSegmentWithTimestampCompleted = { pcm, duration, timestamp in
+            recordedTimestamp = timestamp
+        }
+
+        let beforeOnset = Date()
+        try? await Task.sleep(for: .milliseconds(20))
+        for _ in 0..<3 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.5)
+        }
+        for _ in 0..<3 {
+            vad.processChunk(pcmData: chunk, rmsEnergy: 0.0)
+        }
+
+        #expect(recordedTimestamp != nil)
+        if let ts = recordedTimestamp {
+            #expect(ts >= beforeOnset.addingTimeInterval(-0.2))
+            #expect(ts <= Date())
+        }
+    }
 }

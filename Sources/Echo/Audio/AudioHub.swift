@@ -19,6 +19,7 @@ public final class AudioHub: @unchecked Sendable {
     public typealias MicBufferObserver = @Sendable (AVAudioPCMBuffer) -> Void
     public typealias MicLevelObserver = @Sendable (Float) -> Void
     public typealias SystemBufferObserver = @Sendable (CMSampleBuffer) -> Void
+    public typealias SystemPCMBufferObserver = @Sendable (AVAudioPCMBuffer, Float) -> Void
     public typealias SystemLevelObserver = @Sendable (Float) -> Void
     public typealias AudioErrorObserver = @Sendable (Error) -> Void
     
@@ -29,6 +30,7 @@ public final class AudioHub: @unchecked Sendable {
     private var micBufferObservers: [UUID: MicBufferObserver] = [:]
     private var micLevelObservers: [UUID: MicLevelObserver] = [:]
     private var systemBufferObservers: [UUID: SystemBufferObserver] = [:]
+    private var systemPCMBufferObservers: [UUID: SystemPCMBufferObserver] = [:]
     private var systemLevelObservers: [UUID: SystemLevelObserver] = [:]
     private var errorObservers: [UUID: AudioErrorObserver] = [:]
     
@@ -59,6 +61,9 @@ public final class AudioHub: @unchecked Sendable {
         }
         systemCapture.onSystemAudioBuffer = { [weak self] sampleBuffer in
             self?.broadcastSystemBuffer(sampleBuffer)
+        }
+        systemCapture.onSystemPCMBuffer = { [weak self] pcmBuffer, level in
+            self?.broadcastSystemPCMBuffer(pcmBuffer, level: level)
         }
         systemCapture.onSystemVolumeLevel = { [weak self] level in
             self?.broadcastSystemLevel(level)
@@ -96,6 +101,15 @@ public final class AudioHub: @unchecked Sendable {
         lock.unlock()
         return token
     }
+
+    @discardableResult
+    public func addSystemPCMBufferObserver(_ observer: @escaping SystemPCMBufferObserver) -> UUID {
+        let token = UUID()
+        lock.lock()
+        systemPCMBufferObservers[token] = observer
+        lock.unlock()
+        return token
+    }
     
     @discardableResult
     public func addSystemLevelObserver(_ observer: @escaping SystemLevelObserver) -> UUID {
@@ -120,6 +134,7 @@ public final class AudioHub: @unchecked Sendable {
         micBufferObservers.removeValue(forKey: token)
         micLevelObservers.removeValue(forKey: token)
         systemBufferObservers.removeValue(forKey: token)
+        systemPCMBufferObservers.removeValue(forKey: token)
         systemLevelObservers.removeValue(forKey: token)
         errorObservers.removeValue(forKey: token)
         lock.unlock()
@@ -203,6 +218,13 @@ public final class AudioHub: @unchecked Sendable {
             observer(sampleBuffer)
         }
     }
+
+    func broadcastSystemPCMBuffer(_ buffer: AVAudioPCMBuffer, level: Float) {
+        let observers = snapshotSystemPCMBufferObservers()
+        for observer in observers {
+            observer(buffer, level)
+        }
+    }
     
     func broadcastSystemLevel(_ level: Float) {
         guard shouldPublishLevel(level, channel: .system) else { return }
@@ -268,6 +290,12 @@ public final class AudioHub: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Array(systemBufferObservers.values)
+    }
+
+    private func snapshotSystemPCMBufferObservers() -> [SystemPCMBufferObserver] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(systemPCMBufferObservers.values)
     }
     
     private func snapshotSystemLevelObservers() -> [SystemLevelObserver] {
