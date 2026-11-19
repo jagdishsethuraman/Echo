@@ -121,12 +121,18 @@ The text injection pipeline (`TextInjector.swift`) delivers recognized text into
 ### Database Architecture (`DatabaseManager.swift`)
 Echo utilizes the native macOS system SQLite library (`import SQLite3` / `libsqlite3.dylib`).
 
-- **Storage Location:** `~/Library/Application Support/Echo/echo.sqlite` (with an automatic fallback to `./data/echo.sqlite` when sandboxed).
+- **Storage Location:** `~/Library/Application Support/Echo/echo.sqlite` (fallback: `~/.echo/echo.sqlite`, then the temp directory).
 - **Concurrency & Integrity:**
   ```sql
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
+  PRAGMA busy_timeout = 3000;
+  PRAGMA foreign_keys = ON;
   ```
+- **Migrations:** `PRAGMA user_version` tracks schema generations. v1 creates the tables; v2 adds `idx_sessions_start` for history/retention ordering. Both are idempotent.
+- **Threading:** live writes go through the `dbQueue` async wrappers (`saveSessionAsync`, `saveUtteranceAsync`, `saveSessionAndUtteranceAsync`), so transcription no longer blocks the main actor. Reads used by the menu are small, user-initiated queries.
+- **Retention:** at launch, empty sessions (including stale open streams from older builds) are pruned and the WAL is checkpointed. The menu's Meeting History submenu lists the 8 most recent sessions with copy/delete actions and a manual "Delete Empty Sessions" command.
+- **Error handling:** prepare/step failures route through one `reportError` path and are surfaced through `onError` (wired to the status bar) instead of being printed only.
 
 ### Database Schema
 ```sql
@@ -146,10 +152,12 @@ CREATE TABLE IF NOT EXISTS utterances (
     timestamp REAL NOT NULL,
     text TEXT NOT NULL,
     duration_seconds REAL NOT NULL,
-    is_dictation INTEGER NOT NULL DEFAULT 0
+    is_dictation INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_utterances_session ON utterances(session_id);
 CREATE INDEX IF NOT EXISTS idx_utterances_timestamp ON utterances(timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC);
 
 CREATE TABLE IF NOT EXISTS dictionary (
     id TEXT PRIMARY KEY,
@@ -160,7 +168,6 @@ CREATE TABLE IF NOT EXISTS dictionary (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_dictionary_pattern ON dictionary(raw_pattern);
 ```
 
 ### Word Memory Engine (`WordMemoryEngine.swift`)

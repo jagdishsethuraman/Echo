@@ -64,16 +64,23 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         self.micVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         self.systemVAD = VoiceActivityDetector(energyThreshold: 0.08, silenceThresholdSeconds: 0.6)
         
-        // Restore recent session and past utterances from local SQLite database
-        // ONLY if the session was actively open (endTime == nil). Closed
-        // sessions from past meetings should not be revived as the active recording stream.
+        // Retention runs before restore so empty rows left by older builds
+        // (including stale open sessions) do not come back as the active stream.
+        _ = database.deleteEmptySessions(includingOpen: true)
+
+        // Restore an open session and its utterances from SQLite. Closed or
+        // empty sessions from past launches must not be revived, and no empty
+        // session is created until the first utterance arrives (DATA-03).
         if var lastSession = database.fetchRecentSessions(limit: 1).first, lastSession.endTime == nil {
-            lastSession.segments = database.fetchUtterances(sessionId: lastSession.id)
-            self.activeSession = lastSession
+            let segments = database.fetchUtterances(sessionId: lastSession.id)
+            if !segments.isEmpty {
+                lastSession.segments = segments
+                self.activeSession = lastSession
+            } else {
+                self.activeSession = nil
+            }
         } else {
-            let initialSession = MeetingSession(title: "Echo Speech Stream", startTime: Date())
-            self.activeSession = initialSession
-            database.saveSession(initialSession)
+            self.activeSession = nil
         }
         
         setupVADHandlers()
@@ -164,21 +171,30 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             durationSeconds: duration
         )
         
-        await MainActor.run {
-            if self.activeSession == nil {
-                self.activeSession = MeetingSession(title: "Echo Meeting Session", startTime: Date())
-            }
+        let session: MeetingSession = await MainActor.run {
+            let session = self.ensureActiveSession()
             self.activeSession?.segments.append(segment)
-            if let s = self.activeSession {
-                self.onSessionUpdated?(s)
-                self.database.saveSession(s)
-                self.database.saveUtterance(segment, sessionId: s.id, isDictation: false)
-            }
+            self.onSessionUpdated?(self.activeSession ?? session)
+            return self.activeSession ?? session
         }
+
+        // SQLite I/O stays off the main actor (DATA-02).
+        await database.saveSessionAndUtteranceAsync(session, segment: segment, isDictation: false)
+    }
+
+    /// Create the transient speech-stream session only when the first
+    /// utterance is actually appended. Must run on the main actor.
+    private func ensureActiveSession() -> MeetingSession {
+        if let existing = activeSession {
+            return existing
+        }
+        let session = MeetingSession(title: "Echo Speech Stream", startTime: Date())
+        activeSession = session
+        return session
     }
     
     /// Append a completed Quick Dictation utterance into the unified session timeline & SQLite
-    public func appendDictation(text: String, duration: Double = 1.0) {
+    public func appendDictation(text: String, duration: Double = 1.0) async {
         let segment = TranscriptSegment(
             speaker: .you,
             timestamp: Date(),
@@ -186,26 +202,33 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             durationSeconds: duration
         )
         
-        let performAppend = {
-            if self.activeSession == nil {
-                self.activeSession = MeetingSession(title: "Echo Speech Stream", startTime: Date())
-            }
+        let session: MeetingSession = await MainActor.run {
+            let session = self.ensureActiveSession()
             self.activeSession?.segments.append(segment)
-            if let s = self.activeSession {
-                self.onSessionUpdated?(s)
-                // Persist to local SQLite backend
-                self.database.saveSession(s)
-                self.database.saveUtterance(segment, sessionId: s.id, isDictation: true)
-            }
+            self.onSessionUpdated?(self.activeSession ?? session)
+            return self.activeSession ?? session
         }
         
-        if Thread.isMainThread {
-            performAppend()
-        } else {
-            DispatchQueue.main.async(execute: performAppend)
+        await database.saveSessionAndUtteranceAsync(session, segment: segment, isDictation: true)
+    }
+
+    /// Delete a stored session (and its utterances via the FK cascade).
+    public func deleteSession(id: UUID) async {
+        await database.deleteSessionAsync(id: id)
+        await MainActor.run {
+            if self.activeSession?.id == id {
+                self.activeSession = nil
+            }
         }
     }
     
+    /// Retention: remove empty sessions, protecting an in-progress recording.
+    @discardableResult
+    public func deleteEmptySessions() async -> Int {
+        let keepId = await MainActor.run { self.activeSession?.id }
+        return await database.deleteEmptySessionsAsync(includingOpen: true, keeping: keepId)
+    }
+
     /// Start a new meeting session
     public func startSession(title: String = "Meeting \(Date().formatted(date: .abbreviated, time: .shortened))") async throws {
         let session = MeetingSession(title: title, startTime: Date())
@@ -214,7 +237,7 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             self.captureError = nil
         }
         onSessionUpdated?(session)
-        database.saveSession(session)
+        await database.saveSessionAsync(session)
         
         setAudioPipelineActive(true)
         do {
@@ -223,6 +246,8 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             setAudioPipelineActive(false)
             await MainActor.run {
                 self.captureError = error.localizedDescription
+                // A failed start must not leave a phantom empty session behind.
+                self.activeSession = nil
             }
             print("  ℹ Audio device capture notice: \(error.localizedDescription)")
             throw error
@@ -247,15 +272,19 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
             print("  ⚠ Meeting stopped with transcriptions still in flight")
         }
         
-        return await MainActor.run {
+        let session = await MainActor.run { () -> MeetingSession? in
             guard var session = self.activeSession else { return nil }
             session.endTime = Date()
             // Assigning the @Published property already invalidates observers;
             // a manual objectWillChange.send() here would notify twice.
             self.activeSession = session
-            database.saveSession(session)
             return session
         }
+
+        if let session {
+            await database.saveSessionAsync(session)
+        }
+        return session
     }
     
     /// Transcribe a segmented chunk and append to session timeline

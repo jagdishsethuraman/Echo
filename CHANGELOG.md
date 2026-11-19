@@ -9,7 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Meeting History menu (`DATA-02`):** The menu bar now has a Meeting History submenu listing the 8 most recent sessions with **Copy Transcript** and **Delete Session…** actions, plus a **Delete Empty Sessions** retention command. Deleting a session cascades to its utterances.
+
+### Changed
+- **Off-main SQLite persistence (`DATA-02`):** Live writes from transcription and dictation now go through the database's serial utility queue (`saveSessionAndUtteranceAsync`), so SQLite I/O no longer blocks the main actor. Session metadata and its utterance are persisted in one queue hop.
+- **Schema migrations and retention (`DATA-02`):** `PRAGMA user_version` now tracks a v2 migration that adds `idx_sessions_start` for history queries. Prepare/step failures route through a single `reportError` path and surface through `onError` instead of being print-only.
+
 ### Fixed
+- **Empty session rows (`DATA-03`):** Launch no longer creates and persists an empty "Echo Speech Stream" session. The transient stream is created lazily on the first dictated or transcribed utterance, and empty/stale open sessions left by older builds are pruned at startup.
 - **Non-destructive clipboard injection (`INJ-03`):** Accessibility injection now runs before any clipboard write, so a successful AX insert leaves the user's clipboard untouched. When the paste or typing fallbacks are needed, the full pasteboard contents are snapshotted and restored after success (`restorePreviousClipboard` now defaults to `true`). If every fallback fails, the transcript stays on the clipboard for a manual paste.
 - **Global shortcuts double-firing (`INJ-05`):** The `⇧⌘E/D/C/R` chords are now owned by the global event monitor when Echo is in the background and by the menu key equivalents when Echo is frontmost. Previously both paths ran while the app was focused, so `⇧⌘D` and `⇧⌘R` started and immediately stopped.
 - **Double SwiftUI invalidation (`CORE-02`):** Removed the last manual `objectWillChange.send()` in `MeetingCoordinator.stopSession()`; the `@Published` assignment already notifies observers.

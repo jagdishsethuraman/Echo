@@ -20,22 +20,35 @@ struct MeetingCoordinatorTests {
         try? FileManager.default.removeItem(at: directory)
     }
     
-    @Test @MainActor func createsInitialSessionWhenDatabaseIsEmpty() {
+    @Test @MainActor func doesNotCreateEmptySessionAtLaunch() {
         let (coordinator, database, directory) = makeCoordinator()
         defer { remove(directory) }
         
+        // DATA-03: no session row until the first utterance arrives.
+        #expect(coordinator.activeSession == nil)
+        #expect(database.fetchRecentSessions().isEmpty)
+    }
+
+    @Test @MainActor func firstDictationCreatesAndPersistsSession() async {
+        let (coordinator, database, directory) = makeCoordinator()
+        defer { remove(directory) }
+
+        #expect(coordinator.activeSession == nil)
+
+        await coordinator.appendDictation(text: "first words", duration: 1.5)
+
         let session = coordinator.activeSession
-        #expect(session != nil)
         #expect(session?.title == "Echo Speech Stream")
-        #expect(session?.segments.isEmpty == true)
+        #expect(session?.segments.count == 1)
         #expect(database.fetchRecentSessions().count == 1)
+        #expect(database.fetchUtterances(sessionId: session!.id).count == 1)
     }
     
-    @Test @MainActor func appendDictationUpdatesSessionAndSQLite() {
+    @Test @MainActor func appendDictationUpdatesSessionAndSQLite() async {
         let (coordinator, database, directory) = makeCoordinator()
         defer { remove(directory) }
         
-        coordinator.appendDictation(text: "Quick note about the audio store", duration: 2.5)
+        await coordinator.appendDictation(text: "Quick note about the audio store", duration: 2.5)
         
         let session = coordinator.activeSession
         #expect(session?.segments.count == 1)
@@ -51,12 +64,12 @@ struct MeetingCoordinatorTests {
         #expect(persisted.count == 1)
     }
     
-    @Test @MainActor func appendingMultipleDictationsKeepsOrder() {
+    @Test @MainActor func appendingMultipleDictationsKeepsOrder() async {
         let (coordinator, _, directory) = makeCoordinator()
         defer { remove(directory) }
         
         for index in 0..<3 {
-            coordinator.appendDictation(text: "utterance \(index)")
+            await coordinator.appendDictation(text: "utterance \(index)")
         }
         
         let texts = coordinator.activeSession?.segments.compactMap(\.text)
@@ -113,13 +126,34 @@ struct MeetingCoordinatorTests {
             database: database
         )
         
-        // Yesterday's closed session must NOT be revived as the active session
-        #expect(coordinator.activeSession?.id != closedMeeting.id)
-        #expect(coordinator.activeSession?.title == "Echo Speech Stream")
-        #expect(coordinator.activeSession?.segments.isEmpty == true)
+        // Yesterday's closed session must NOT be revived as the active session,
+        // and no empty replacement is persisted (DATA-03).
+        #expect(coordinator.activeSession == nil)
+        #expect(database.fetchRecentSessions().count == 1)
+    }
+
+    @Test @MainActor func prunesStaleEmptyOpenSessionAtLaunch() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo-meeting-stale-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { remove(directory) }
+
+        let database = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
+        // Older builds persisted an open, empty stream on every launch.
+        let stale = MeetingSession(title: "Echo Speech Stream", startTime: Date(timeIntervalSince1970: 1_700_000_000))
+        database.saveSession(stale)
+        #expect(database.fetchRecentSessions().count == 1)
+
+        let coordinator = MeetingCoordinator(
+            phononRunner: PhononProcessRunner(fermionPath: "/usr/bin/true"),
+            database: database
+        )
+
+        #expect(coordinator.activeSession == nil)
+        #expect(database.fetchRecentSessions().isEmpty)
     }
     
-    @Test @MainActor func sessionUpdateCallbackReceivesAppendedSegment() {
+    @Test @MainActor func sessionUpdateCallbackReceivesAppendedSegment() async {
         let (coordinator, _, directory) = makeCoordinator()
         defer { remove(directory) }
         
@@ -128,7 +162,7 @@ struct MeetingCoordinatorTests {
             received = session.segments.compactMap(\.text)
         }
         
-        coordinator.appendDictation(text: "notify me")
+        await coordinator.appendDictation(text: "notify me")
         #expect(received == ["notify me"])
     }
     

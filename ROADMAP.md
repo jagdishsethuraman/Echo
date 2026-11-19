@@ -27,7 +27,7 @@ This document outlines the strategic engineering roadmap, architectural mileston
 - [x] **Rolling Energy VAD:** Dual-detector voice activity detector segmenting multi-speaker speech upon 600ms natural silence boundaries.
 - [x] **Push-to-Talk & Live Streaming HUD:** Non-activating floating `NSPanel` (`canBecomeKey=false`) streaming recognized words live every 650ms with audio waveform meters and blinking cursor.
 - [x] **Universal Auto-Paste Pipeline:** `AXUIElement` direct value replacement → synthetic `Cmd+V` (25ms settle + `.maskCommand` isolation) → direct Unicode typing fallback. Text is also left on the clipboard as a manual fallback.
-- [x] **Local SQLite Backend (`echo.sqlite`):** Native WAL-mode persistence using macOS `libsqlite3` archiving sessions, utterances, and quick dictations across app restarts.
+- [x] **Local SQLite Backend (`echo.sqlite`):** Native WAL-mode persistence using macOS `libsqlite3` archiving sessions, utterances, and quick dictations across app restarts. Live writes run on a serial utility queue, `user_version` migrations add indexes, empty/stale sessions are pruned at launch, and the menu exposes a Meeting History submenu with copy/delete actions.
 - [x] **Word Memory & Speech Lexicon Engine:** Whole-word boundary regex engine (`\b(pattern)\b`) correcting phonetically ambiguous STT outputs in real time across live streams and active cursor typing.
 - [x] **Graphite Frost Bento Meeting Studio:** 62/38 Bento grid with neutral frosted graphite surfaces, a cool frost-blue accent, live VU meters, and Markdown export.
 - [x] **Adaptive Pill Menu Bar:** Menu bar status item adapting dynamically from minimal glyph `◉` to active recording timer `● MM:SS`.

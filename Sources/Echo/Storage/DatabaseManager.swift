@@ -9,6 +9,18 @@ public final class DatabaseManager: @unchecked Sendable {
     private let dbPath: String
     private let dbQueue = DispatchQueue(label: "com.echo.database", qos: .utility)
     
+    /// Callback for surfacing SQLite failures to the UI. Invoked on the main
+    /// queue; kept outside `lock` so a handler that reads the database cannot
+    /// deadlock the caller.
+    public typealias ErrorHandler = (String) -> Void
+    private let errorLock = NSLock()
+    private var _onError: ErrorHandler?
+
+    public var onError: ErrorHandler? {
+        get { errorLock.withLock { _onError } }
+        set { errorLock.withLock { _onError = newValue } }
+    }
+
     /// SQLite treats a NULL destructor as `SQLITE_STATIC`: it keeps the pointer
     /// passed to `sqlite3_bind_text` after the call returns. Swift `String` and
     /// `NSString` buffers are temporaries, so every bind must use
@@ -23,6 +35,18 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
     
+    /// Single place for surfacing SQLite failures: log once and notify the
+    /// optional UI handler without touching any database state under `lock`.
+    private func reportError(_ context: String) {
+        let message = String(cString: sqlite3_errmsg(db))
+        print("Echo DatabaseManager: \(context): \(message)")
+        if let handler = onError {
+            DispatchQueue.main.async {
+                handler("\(context): \(message)")
+            }
+        }
+    }
+
     public init(customPath: String? = nil) {
         if let path = customPath {
             self.dbPath = path
@@ -124,6 +148,28 @@ public final class DatabaseManager: @unchecked Sendable {
         sqlite3_exec(db, "PRAGMA user_version = \(version);", nil, nil, nil)
     }
     
+    /// SQLite's query plan for `sql`; used by migration tests to prove an index
+    /// is actually considered.
+    func explainQueryPlan(_ sql: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "EXPLAIN QUERY PLAN \(sql)", -1, &stmt, nil) == SQLITE_OK else {
+            reportError("EXPLAIN QUERY PLAN")
+            sqlite3_finalize(stmt)
+            return ""
+        }
+        var lines: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let detail = sqlite3_column_text(stmt, 3) {
+                lines.append(String(cString: detail))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return lines.joined(separator: "\n")
+    }
+
     private func applyMigrations() {
         lock.lock()
         defer { lock.unlock() }
@@ -166,10 +212,19 @@ public final class DatabaseManager: @unchecked Sendable {
             """
             
             if sqlite3_exec(db, schemaSQL, nil, nil, nil) != SQLITE_OK {
-                let errMsg = String(cString: sqlite3_errmsg(db))
-                print("Echo DatabaseManager: Table creation/migration error (v1): \(errMsg)")
+                reportError("Table creation/migration error (v1)")
             } else {
                 setUserVersionLocked(1)
+            }
+        }
+
+        // v2: the history/retention queries order sessions by start time.
+        if version < 2 {
+            let sql = "CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC);"
+            if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
+                reportError("Migration error (v2)")
+            } else {
+                setUserVersionLocked(2)
             }
         }
     }
@@ -206,7 +261,7 @@ public final class DatabaseManager: @unchecked Sendable {
             sqlite3_bind_double(stmt, 6, Date().timeIntervalSince1970)
             
             if sqlite3_step(stmt) != SQLITE_DONE {
-                print("Echo DatabaseManager: saveSession error: \(String(cString: sqlite3_errmsg(db)))")
+                reportError("saveSession")
             }
         }
         sqlite3_finalize(stmt)
@@ -236,7 +291,7 @@ public final class DatabaseManager: @unchecked Sendable {
             sqlite3_bind_int(stmt, 7, isDictation ? 1 : 0)
             
             if sqlite3_step(stmt) != SQLITE_DONE {
-                print("Echo DatabaseManager: saveUtterance error: \(String(cString: sqlite3_errmsg(db)))")
+                reportError("saveUtterance")
             }
         }
         sqlite3_finalize(stmt)
@@ -251,12 +306,53 @@ public final class DatabaseManager: @unchecked Sendable {
         if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
             bindText(stmt, 1, id.uuidString)
             if sqlite3_step(stmt) != SQLITE_DONE {
-                print("Echo DatabaseManager: deleteSession error: \(String(cString: sqlite3_errmsg(db)))")
+                reportError("deleteSession")
             }
         }
         sqlite3_finalize(stmt)
     }
     
+    /// Retention: remove sessions that never captured an utterance.
+    /// - Parameters:
+    ///   - includingOpen: at launch, stale open sessions from a previous
+    ///     process are junk too; pass `false` to keep an in-progress session.
+    ///   - keeping: session to protect even when it has no utterances yet.
+    @discardableResult
+    public func deleteEmptySessions(includingOpen: Bool = true, keeping: UUID? = nil) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var sql = "DELETE FROM sessions WHERE "
+        if !includingOpen {
+            sql += "end_time IS NOT NULL AND "
+        }
+        if keeping != nil {
+            sql += "id != ? AND "
+        }
+        sql += """
+        NOT EXISTS (
+            SELECT 1 FROM utterances WHERE utterances.session_id = sessions.id
+        );
+        """
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            reportError("deleteEmptySessions prepare")
+            sqlite3_finalize(stmt)
+            return 0
+        }
+        if let keeping {
+            bindText(stmt, 1, keeping.uuidString)
+        }
+        let rc = sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+        guard rc == SQLITE_DONE else {
+            reportError("deleteEmptySessions")
+            return 0
+        }
+        return Int(sqlite3_changes(db))
+    }
+
     public func checkpointWAL() {
         lock.lock()
         defer { lock.unlock() }
@@ -264,7 +360,7 @@ public final class DatabaseManager: @unchecked Sendable {
         var framesCheckpointed: Int32 = 0
         let rc = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_PASSIVE, &logSize, &framesCheckpointed)
         if rc != SQLITE_OK {
-            print("Echo DatabaseManager: WAL checkpoint error: \(String(cString: sqlite3_errmsg(db)))")
+            reportError("WAL checkpoint")
         }
     }
     
@@ -288,6 +384,45 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
     
+    /// Persist the session metadata and its new utterance in one queue hop so
+    /// the utterance can never be written before its parent row.
+    public func saveSessionAndUtteranceAsync(
+        _ session: MeetingSession,
+        segment: TranscriptSegment,
+        isDictation: Bool
+    ) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.saveSession(session)
+                self.saveUtterance(segment, sessionId: session.id, isDictation: isDictation)
+                continuation.resume()
+            }
+        }
+    }
+
+    public func deleteSessionAsync(id: UUID) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.deleteSession(id: id)
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Prune empty sessions and compact the WAL in one background hop.
+    @discardableResult
+    public func deleteEmptySessionsAsync(includingOpen: Bool = true, keeping: UUID? = nil) async -> Int {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                let removed = self.deleteEmptySessions(includingOpen: includingOpen, keeping: keeping)
+                if removed > 0 {
+                    self.checkpointWAL()
+                }
+                continuation.resume(returning: removed)
+            }
+        }
+    }
+
     public func fetchRecentSessionsAsync(limit: Int = 20) async -> [MeetingSession] {
         await withCheckedContinuation { continuation in
             dbQueue.async {
@@ -457,7 +592,7 @@ public final class DatabaseManager: @unchecked Sendable {
             sqlite3_bind_double(stmt, 6, now)
             
             if sqlite3_step(stmt) != SQLITE_DONE {
-                print("Echo DatabaseManager: dictionary upsert error: \(String(cString: sqlite3_errmsg(db)))")
+                reportError("dictionary upsert")
             }
         }
         sqlite3_finalize(stmt)

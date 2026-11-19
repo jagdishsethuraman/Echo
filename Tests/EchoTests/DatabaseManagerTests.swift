@@ -203,7 +203,69 @@ struct DatabaseManagerTests {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
         
-        #expect(db.userVersion() >= 1)
+        #expect(db.userVersion() >= 2)
+    }
+
+    @Test func migrationAddsSessionStartIndex() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        // Re-opening an existing v2 database must be idempotent.
+        let reopened = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
+        #expect(reopened.userVersion() == 2)
+
+        // The v2 index exists and the query plan uses it.
+        let plan = db.explainQueryPlan(
+            "SELECT id FROM sessions ORDER BY start_time DESC LIMIT 5;"
+        )
+        #expect(plan.contains("idx_sessions_start"))
+    }
+
+    @Test func deleteEmptySessionsKeepsSessionsWithUtterances() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        let emptyClosed = MeetingSession(
+            title: "Empty",
+            startTime: Date(timeIntervalSince1970: 1_700_000_000),
+            endTime: Date(timeIntervalSince1970: 1_700_000_060)
+        )
+        let populated = MeetingSession(title: "Populated", startTime: Date(timeIntervalSince1970: 1_700_000_100))
+        db.saveSession(emptyClosed)
+        db.saveSession(populated)
+        db.saveUtterance(
+            TranscriptSegment(speaker: .you, text: "kept", durationSeconds: 1),
+            sessionId: populated.id
+        )
+
+        // An open (end_time NULL) session must survive the closed-only pass.
+        let emptyOpen = MeetingSession(title: "Still recording", startTime: Date(timeIntervalSince1970: 1_700_000_200))
+        db.saveSession(emptyOpen)
+
+        let removed = db.deleteEmptySessions(includingOpen: false)
+
+        #expect(removed == 1)
+        let remaining = Set(db.fetchRecentSessions(limit: 10).map(\.title))
+        #expect(remaining == ["Populated", "Still recording"])
+    }
+
+    @Test func launchRetentionRemovesStaleOpenSessionsButHonoursKeepId() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        let staleOpen = MeetingSession(
+            title: "Echo Speech Stream",
+            startTime: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        db.saveSession(staleOpen)
+
+        // Protecting an in-progress recording keeps its empty open row.
+        #expect(db.deleteEmptySessions(includingOpen: true, keeping: staleOpen.id) == 0)
+        #expect(db.fetchRecentSessions().count == 1)
+
+        // At launch nothing is protected, so the stale row is pruned.
+        #expect(db.deleteEmptySessions(includingOpen: true) == 1)
+        #expect(db.fetchRecentSessions().isEmpty)
     }
     
     @Test func deleteSessionCascadesToUtterances() {

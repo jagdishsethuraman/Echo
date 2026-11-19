@@ -4,7 +4,7 @@
 
 This document captures the findings that were **not** addressed in `e250a3a`. All four P0 items have since been fixed; their rationale is kept below so the backlog stays self-contained. Each item has an ID so it can be referenced from commits and issues.
 
-This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. Most of the P1/P2 backlog is now genuinely resolved. Seven statuses were downgraded to **partially fixed** because the shipped change does not fully match the claim, and four new findings were added: `INJ-05`, `UX-06`, `DATA-03`, and `BUILD-05`. On 2026-11-19, `INJ-03`, `INJ-05`, `CORE-02`, `BUILD-05`, and `DOC-01` were fixed with regression coverage (98 tests now); `UX-06` and `DATA-03` remain open.
+This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. Most of the P1/P2 backlog is now genuinely resolved. Seven statuses were downgraded to **partially fixed** because the shipped change does not fully match the claim, and four new findings were added: `INJ-05`, `UX-06`, `DATA-03`, and `BUILD-05`. On 2026-11-19, `DATA-02`, `DATA-03`, `INJ-03`, `INJ-05`, `CORE-02`, `BUILD-05`, and `DOC-01` were fixed with regression coverage (103 tests now); `UX-03`, `UX-05`, and `UX-06` remain open.
 
 > Severity is about user-visible risk, not effort:
 > **P0** = broken or unsafe today · **P1** = architectural debt with real failure modes · **P2** = UX/quality problems · **P3** = build, security, docs, hygiene.
@@ -26,7 +26,7 @@ This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. 
 | AUD-06 | P1 | Quality | System-audio meter assumes Int16; capture failures stop silently | ✅ Fixed |
 | ENG-02 | P1 | Performance | Unbounded concurrent `fermion` processes per segment | ✅ Fixed |
 | DATA-01 | P1 | Product model | Quick dictations are appended to the active meeting; startup restores yesterday's session | ✅ Fixed |
-| DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | 🟡 Partial |
+| DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | ✅ Fixed |
 | CORE-01 | P1 | Concurrency | Pervasive `@unchecked Sendable`; no strict-concurrency checking | 🟡 Partial |
 | CORE-02 | P1 | SwiftUI | `objectWillChange.send()` before mutating `@Published` causes double invalidation | ✅ Fixed |
 | CORE-03 | P1 | Safety | Force-cast `focusedElement as! AXUIElement` in the injection path | ✅ Fixed |
@@ -49,7 +49,7 @@ This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. 
 | BUILD-03 | P3 | Cleanup | Dead code: `PhononClient`, `BenchmarkResult`, unused enum case, unused field | ✅ Fixed |
 | BUILD-04 | P3 | Performance | `FERMION_DEVICE=cpu` contradicts documented Metal/MLX acceleration | Open |
 | BUILD-05 | P3 | Cleanup | `NSAppleEventsUsageDescription` remains after AppleScript removal; changelog contradicts itself | ✅ Fixed |
-| DATA-03 | P3 | Storage | Every launch persists a new empty "Echo Speech Stream" session; no retention/compaction | 🆕 Open |
+| DATA-03 | P3 | Storage | Every launch persists a new empty "Echo Speech Stream" session; no retention/compaction | ✅ Fixed |
 | DOC-01 | P3 | Docs | README/ARCHITECTURE/ROADMAP/CHANGELOG disagree with the code | ✅ Fixed |
 | REPO-01 | P3 | Hygiene | No formatter/linter config, `.DS_Store`, simulator scripts with absolute paths | Open |
 | REPO-02 | P3 | Testing | `test_injection.swift` fails on a stale assertion (pre-existing) | ✅ Fixed |
@@ -77,6 +77,7 @@ This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. 
 | Dead `PhononClient`, `BenchmarkResult`, stale process error | Deleted prototype, mapped failures to `processError` | `56014ea` |
 | Shortcut double-fire, last manual invalidation, stale AppleEvents key, doc drift (INJ-05, CORE-02, BUILD-05, DOC-01) | Global monitor owns background chords; menu owns focused chords; removed manual send; plist/changelog/docs re-synced | working tree, 2026-11-19 |
 | Clipboard wiped during injection, even after AX success (INJ-03) | AX runs before clipboard writes; full pasteboard snapshot restored after successful paste/typing; transcript retained only when every fallback fails | working tree, 2026-11-19 |
+| Main-thread SQLite writes, empty session per launch, no retention/history (DATA-02, DATA-03) | Async queue persistence, v2 migration, launch/retention pruning, Meeting History menu with copy/delete | working tree, 2026-11-19 |
 
 ---
 
@@ -220,34 +221,27 @@ Each VAD completion spawns `Task { await processSpeechSegment(...) }`, which lau
 
 **Status:** ✅ Fixed (`6995879`). Closed sessions (`endTime != nil`) are not revived as active recording streams on startup; standalone quick dictations are saved to the SQLite dictation log with `sessionId == nil` (`AppCoordinator.swift:358-372`) and no longer require an active meeting. A quick dictation during a meeting is intentionally appended to that meeting.
 
-**Residual:** when the last session is closed, startup creates and persists a brand-new empty "Echo Speech Stream" session (`MeetingCoordinator.swift:73-77`). See `DATA-03`.
+**Residual:** none. Startup no longer creates an empty stream; the session is created lazily on the first utterance and stale empty rows are pruned (see `DATA-03`).
 
 **Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:33-42`, `:104-132`; `Sources/Echo/AppCoordinator.swift:262`
 
-Startup restores the most recent session as `activeSession`, so today's quick dictations are appended to yesterday's meeting. "Start Meeting" replaces `activeSession`, hiding earlier dictations from the UI even though they are in SQLite. There is no session history browser.
+Startup restores the most recent open session as `activeSession` so an interrupted recording can continue. Starting a new meeting replaces it, hiding the earlier session from the studio even though it remains in SQLite. The menu bar now exposes a Meeting History submenu for browsing and deleting recent sessions.
 
 **Fix:** separate "dictation log" from "meeting session" (different streams/views), start sessions explicitly, and add a sidebar of past sessions with search (roadmap v1.1/v2.0).
 
 ### DATA-02 · SQLite lifecycle and schema hardening
 
-**Status:** 🟡 **Partially fixed** (`6995879`). Configured `PRAGMA busy_timeout = 3000` + `sqlite3_busy_timeout`, `PRAGMA foreign_keys = ON`, `FOREIGN KEY ... ON DELETE CASCADE` on utterances, `PRAGMA user_version` migrations, `deleteSession()` with cascading cleanup, `checkpointWAL()`, and dedicated `dbQueue` async wrappers.
+**Status:** ✅ Fixed (2026-11-19). The remaining gaps were closed on top of `6995879`:
 
-**What remains:**
-- The async wrappers are **unused in production**. The live path still calls synchronous `saveSession`/`saveUtterance` from `appendTranscribedSegment` on `MainActor` (`MeetingCoordinator.swift:167-177`), so every utterance blocks the main thread on SQLite I/O. Either use `saveSessionAsync`/`saveUtteranceAsync` there or move the coordinator's persistence to a storage actor.
-- The migration runner only knows schema v1; there is no v2 hook or migration test.
-- No retention/compaction: `deleteSession` is never called from the app, and WAL growth is only checkpointed (not bounded). There is still no session-history/delete UI.
-- Central SQLite error handling is still `print`-only; failures are not surfaced.
+- **Live writes are off the main actor.** `MeetingCoordinator.appendTranscribedSegment`, `appendDictation`, `startSession`, and `stopSession` now await the `dbQueue` wrappers. Session metadata and its new utterance are persisted together via `saveSessionAndUtteranceAsync`, so an utterance can never be written before its parent row.
+- **Versioned migrations.** `PRAGMA user_version` drives v1 (tables/indexes) and v2 (`idx_sessions_start`); both are idempotent. `explainQueryPlan` backs a migration test that proves the index is used.
+- **Retention/compaction.** `deleteEmptySessions(includingOpen:keeping:)` prunes sessions with no utterances, protects an in-progress recording by id, and checkpoints the WAL. It runs at launch (including stale open rows left by older builds) and from the menu.
+- **History/delete surface.** The menu's **Meeting History** submenu lists the 8 most recent sessions with **Copy Transcript** and **Delete Session…** (confirmation, FK cascade) plus **Delete Empty Sessions**.
+- **Central error handling.** Prepare/step failures route through one `reportError` path and are surfaced through `onError`, which `AppCoordinator` maps to the status bar.
 
-**Where:** `Sources/Echo/Storage/DatabaseManager.swift` (all public methods)
+**Where:** `Sources/Echo/Storage/DatabaseManager.swift`, `Sources/Echo/Engine/MeetingCoordinator.swift`, `Sources/Echo/UI/MenuBarManager.swift`, `Sources/Echo/AppCoordinator.swift`
 
-- Every read/write runs synchronously on the main actor when called from SwiftUI/coordinators.
-- No `user_version` / migration path; schema changes will require manual handling.
-- No `busy_timeout`, no `foreign_keys`, no `ON DELETE CASCADE` from `utterances` to `sessions`.
-- `idx_dictionary_pattern` duplicates the index created by `UNIQUE(raw_pattern)`.
-- No session deletion / retention / compaction; WAL can grow indefinitely.
-- Failures (`sqlite3_prepare_v2`, `sqlite3_step`) are still ignored outside the dictionary upsert.
-
-**Fix:** move storage behind an actor or serial queue, add a versioned migration runner, `PRAGMA busy_timeout = 3000`, `PRAGMA foreign_keys = ON`, a `sessions → utterances` cascade, and centralized SQLite error handling/logging.
+**Remaining nicety:** menu history reads are small, user-initiated synchronous queries; a future history window should use `fetchRecentSessionsAsync`.
 
 ### CORE-01 · `@unchecked Sendable` everywhere
 
@@ -508,13 +502,13 @@ This is an acceptable v1 heuristic, but it should be labelled as such and harden
 
 ### DATA-03 · Empty session row on every launch
 
-**Status:** 🆕 Open.
+**Status:** ✅ Fixed (2026-11-19).
 
-**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:67-77`
-
-When the most recent session is closed, initialization creates a fresh `"Echo Speech Stream"` session and immediately persists it. Nothing is recorded into it unless the user dictates, so every launch after a completed meeting leaves an empty session row (and the test suite encodes this behavior). Over time the session list fills with empty streams, and there is no cleanup (`deleteSession` is never called by the app).
-
-**Fix:** create the transient stream lazily on the first utterance/partial rather than in `init`, or reuse a single per-day stream; add retention (e.g. delete empty or older-than-N-days sessions) before shipping a history browser.
+- `MeetingCoordinator.init` no longer creates or persists a placeholder session; `activeSession` is `nil` until the first utterance.
+- `ensureActiveSession()` creates the transient "Echo Speech Stream" only when `appendTranscribedSegment`/`appendDictation` actually appends something, then persists it.
+- Startup retention deletes sessions with zero utterances, including stale open rows written by older builds. An open session is restored only if it already contains utterances.
+- A regression test (`prunesStaleEmptyOpenSessionAtLaunch`) seeds an empty open session, constructs the coordinator, and asserts both `activeSession == nil` and that the row was pruned.
+- `deleteEmptySessions(includingOpen:keeping:)` protects an in-progress recording from the manual cleanup command.
 
 ### DOC-01 · Documentation drift
 
@@ -523,7 +517,7 @@ When the most recent session is closed, initialization creates a fresh `"Echo Sp
 - `ARCHITECTURE.md` — injection is now described as AX → paste → typing with the real 25 ms settle/Control behavior; the clipboard paragraph no longer claims it is never wiped; the engine section says CPU by default with `ECHO_FERMION_DEVICE` override.
 - `README.md` — clipboard, Markdown export, CPU default, and the `⇧⌘` Accessibility caveat now match the implementation and menu labels.
 - `ROADMAP.md` — removed the retired brass/Obsidian theme claim, the stale 30 ms/Option settling detail, and the old `Right ⌥` remap reference.
-- `AGENTS.md` — test count updated to 98 tests in 13 suites.
+- `AGENTS.md` — test count updated to 103 tests in 13 suites.
 - `CHANGELOG.md` — added `[Unreleased]` for the `INJ-05`, `CORE-02`, and `BUILD-05` fixes and marked the 1.3.0 Automation entry as superseded.
 
 **Guardrail:** keep the docs in the same commit as behavior changes. The remaining `BUILD-04` item is now a product decision (CPU vs. Metal), not a documentation contradiction.
@@ -551,15 +545,14 @@ When the most recent session is closed, initialization creates a fresh `"Echo Sp
 
 ## Suggested sequencing
 
-Done: QLT-01/REPO-01 (CI), AUD-01, ENG-01/ENG-02, AUD-02–AUD-06, CFG-01, BUILD-01, BUILD-05, DATA-01 (first pass), UX-02, UX-04, SEC-01, SEC-02, LEX-01, INJ-01/INJ-02/INJ-03/INJ-04/INJ-05, UX-01, CORE-02, CORE-03, DOC-01.
+Done: QLT-01/REPO-01 (CI), AUD-01, ENG-01/ENG-02, AUD-02–AUD-06, CFG-01, BUILD-01, BUILD-05, DATA-01, DATA-02, DATA-03, UX-02, UX-04, SEC-01, SEC-02, LEX-01, INJ-01/INJ-02/INJ-03/INJ-04/INJ-05, UX-01, CORE-02, CORE-03, DOC-01.
 
 Remaining, in order:
 
-1. **DATA-02 + DATA-03** — move the live persistence path off `MainActor`, stop persisting empty sessions every launch, and add retention/history.
-2. **BUILD-04** — benchmark CPU vs. Metal/MLX on this machine and make the default deliberate. Docs already say CPU, so this is now a performance task.
-3. **CORE-01** — enable strict concurrency in a branch; fix the remaining 22 `@unchecked Sendable` sites it exposes (start with `HotkeyManager`).
-4. **UX-03, UX-05, UX-06** — intrinsic HUD width, export scope/picker, and word-boundary notes extraction.
-5. **BUILD-02 + REPO-01** — inner-to-outer signing/notarization, formatter config, script/binaries cleanup, Makefile.
+1. **BUILD-04** — benchmark CPU vs. Metal/MLX on this machine and make the default deliberate. Docs already say CPU, so this is now a performance task.
+2. **CORE-01** — enable strict concurrency in a branch; fix the remaining 22 `@unchecked Sendable` sites it exposes (start with `HotkeyManager`).
+3. **UX-03, UX-05, UX-06** — intrinsic HUD width, export scope/picker, and word-boundary notes extraction.
+4. **BUILD-02 + REPO-01** — inner-to-outer signing/notarization, formatter config, script/binaries cleanup, Makefile.
 
 ---
 
@@ -569,7 +562,7 @@ Re-audited `dd92480`…`bce471d` (1.3.0/1.3.1) against the source on 2026-11-19.
 
 - `swift build` — clean.
 - `swift build -c release` — clean.
-- `swift test` — **98 tests in 13 suites passing** (audio store, converter, VAD, AudioHub, transcription queue, SQLite, word memory, formatting/injection, export, coordination, notes extraction, hotkeys, settings). New coverage includes the focused-app shortcut path and the non-destructive clipboard contract (AX untouched, restore on success, transcript retained on total failure).
+- `swift test` — **103 tests in 13 suites passing** (audio store, converter, VAD, AudioHub, transcription queue, SQLite, word memory, formatting/injection, export, coordination, notes extraction, hotkeys, settings). New coverage includes the focused-app shortcut path, the non-destructive clipboard contract, lazy session creation, stale-empty pruning, retention protection, and the v2 migration plan.
 - Static checks: `git diff --stat 78dbd4a..HEAD` (37 source/test files, +4,260/−921), grep for remaining `objectWillChange` (1), `@unchecked Sendable` (22), unused async DB wrappers (production: 0 call sites), and stale plist keys.
 - Duplicate-shortcut dispatch (`INJ-05`) confirmed with a throwaway AppKit harness: one local `.keyDown` monitor plus one `⇧⌘` menu key equivalent produced `monitor=1 menu=1` for a synthesized event.
 - Not exercised (environment-limited): live microphone/system-audio capture and TCC prompts, a real `fermion` binary, and multi-monitor HUD placement. These need a manual pass with the app bundle.

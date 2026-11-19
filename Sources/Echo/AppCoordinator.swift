@@ -70,6 +70,12 @@ public final class AppCoordinator: ObservableObject {
         setupMicWiring()
         setupPillWiring()
         setupAudioErrorWiring()
+
+        DatabaseManager.shared.onError = { [weak self] message in
+            Task { @MainActor in
+                self?.statusMessage = "Storage error: \(message)"
+            }
+        }
     }
     
     private func setupAudioErrorWiring() {
@@ -360,7 +366,7 @@ public final class AppCoordinator: ObservableObject {
                 // otherwise persist to SQLite as standalone dictation.
                 let durationSec = Double(capturedData.count) / Double(AudioPCMBufferStore.bytesPerSecond)
                 if isMeetingActive {
-                    meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
+                    await meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
                 } else {
                     let segment = TranscriptSegment(
                         speaker: .you,
@@ -368,7 +374,7 @@ public final class AppCoordinator: ObservableObject {
                         text: sanitized,
                         durationSeconds: durationSec
                     )
-                    DatabaseManager.shared.saveUtterance(segment, sessionId: nil, isDictation: true)
+                    await DatabaseManager.shared.saveUtteranceAsync(segment, sessionId: nil, isDictation: true)
                 }
                 
                 // 2. Direct injection into active text cursor + clipboard placement
@@ -462,6 +468,20 @@ public final class AppCoordinator: ObservableObject {
         statusMessage = "Copied last dictation to clipboard"
     }
     
+    /// Delete one saved session; the database cascades its utterances.
+    public func deleteSession(id: UUID) async {
+        await meetingCoordinator.deleteSession(id: id)
+        statusMessage = "Deleted meeting session"
+    }
+
+    /// Remove empty sessions (retention) and compact the WAL.
+    public func deleteEmptySessions() async {
+        let removed = await meetingCoordinator.deleteEmptySessions()
+        statusMessage = removed == 0
+            ? "No empty sessions to remove"
+            : "Removed \(removed) empty session\(removed == 1 ? "" : "s")"
+    }
+
     public func exportLastMeetingMarkdown() {
         let session = meetingCoordinator.activeSession ?? MeetingSession(title: "Echo Meeting Session")
         let md = session.exportMarkdown()

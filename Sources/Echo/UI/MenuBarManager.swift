@@ -190,6 +190,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         exportItem.target = self
         menu.addItem(exportItem)
         
+        // Meeting history / retention
+        menu.addItem(makeHistoryMenuItem())
+
         menu.addItem(NSMenuItem.separator())
         
         // Quit
@@ -247,6 +250,95 @@ public final class MenuBarManager: NSObject, NSMenuDelegate {
         }
     }
     
+    private func makeHistoryMenuItem() -> NSMenuItem {
+        let historyItem = NSMenuItem(title: "Meeting History", action: nil, keyEquivalent: "")
+        let historyMenu = NSMenu(title: "Meeting History")
+        let sessions = DatabaseManager.shared.fetchRecentSessions(limit: 8)
+
+        if sessions.isEmpty {
+            let empty = NSMenuItem(title: "No saved sessions", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            historyMenu.addItem(empty)
+        } else {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            for session in sessions {
+                let title = "\(formatter.string(from: session.startTime)) · \(session.title)"
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+
+                let copy = NSMenuItem(
+                    title: "Copy Transcript",
+                    action: #selector(copyHistorySession(_:)),
+                    keyEquivalent: ""
+                )
+                copy.target = self
+                copy.representedObject = session.id
+                submenu.addItem(copy)
+
+                let delete = NSMenuItem(
+                    title: "Delete Session…",
+                    action: #selector(deleteHistorySession(_:)),
+                    keyEquivalent: ""
+                )
+                delete.target = self
+                delete.representedObject = session.id
+                submenu.addItem(delete)
+
+                item.submenu = submenu
+                historyMenu.addItem(item)
+            }
+            historyMenu.addItem(NSMenuItem.separator())
+        }
+
+        let cleanup = NSMenuItem(
+            title: "Delete Empty Sessions",
+            action: #selector(cleanupEmptySessions),
+            keyEquivalent: ""
+        )
+        cleanup.target = self
+        historyMenu.addItem(cleanup)
+
+        historyItem.submenu = historyMenu
+        return historyItem
+    }
+
+    @objc private func copyHistorySession(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        let segments = DatabaseManager.shared.fetchUtterances(sessionId: id)
+        let text = segments
+            .map { "\($0.speaker == .you ? "You" : "Meeting"): \($0.text)" }
+            .joined(separator: "\n")
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    @objc private func deleteHistorySession(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete this meeting session?"
+        alert.informativeText = "The transcript will be removed from this Mac."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task { @MainActor in
+            await coordinator.deleteSession(id: id)
+            rebuildMenu()
+        }
+    }
+
+    @objc private func cleanupEmptySessions() {
+        Task { @MainActor in
+            await coordinator.deleteEmptySessions()
+            rebuildMenu()
+        }
+    }
+
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
     }

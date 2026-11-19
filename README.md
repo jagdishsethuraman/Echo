@@ -26,7 +26,7 @@
 
 1. **Handy-Style Quick Dictation:** Hold `⌃ Control` anywhere on your Mac (or double-tap `⌃` for hands-free lock mode). Recognized words stream live into a floating bottom-center HUD. When released (or tapped again), finalized, sentence-capitalized text is automatically typed or pasted into your active cursor in any app.
 2. **Meetily-Style Meeting Studio:** Record meetings without inviting bots or installing virtual audio drivers. Echo captures your microphone via CoreAudio and system attendee audio via `ScreenCaptureKit` loopback, slicing utterances with rolling VAD and generating structured Markdown notes.
-3. **Local SQLite & Word Memory:** Every session and dictation is archived in local SQLite (`echo.sqlite`). A built-in lexicon engine learns personal vocabulary, project jargon, and acronyms, automatically correcting phonetically misheard terms in real time.
+3. **Local SQLite & Word Memory:** Every session and dictation is archived in local SQLite (`echo.sqlite`). Writes happen off the main thread, the schema migrates itself, and empty sessions are pruned at launch. A built-in lexicon engine learns personal vocabulary, project jargon, and acronyms, automatically correcting phonetically misheard terms in real time. The menu's **Meeting History** submenu lists recent sessions with copy and delete actions.
 
 ---
 
