@@ -307,7 +307,7 @@ public struct MeetingStudioView: View {
                 .fill(isRecording ? EchoTheme.recordingRed : EchoTheme.textMuted)
                 .frame(width: 5.5, height: 5.5)
                 .shadow(color: isRecording ? EchoTheme.recordingRed.opacity(0.7) : .clear, radius: 3)
-            Text(isRecording ? "Recording" : "Ready")
+            Text(coordinator.isMeetingFinalizing ? "Finalizing" : (isRecording ? "Recording" : "Ready"))
                 .font(EchoFont.captionMedium)
                 .foregroundStyle(isRecording ? EchoTheme.recordingRed : EchoTheme.textMuted)
         }
@@ -328,7 +328,7 @@ public struct MeetingStudioView: View {
             HStack(spacing: 6) {
                 Image(systemName: isRecording ? "stop.fill" : "record.circle")
                     .font(.system(size: 10, weight: .semibold))
-                Text(isRecording ? "Stop Meeting" : "Start Meeting")
+                Text(coordinator.isMeetingFinalizing ? "Finalizing…" : (isRecording ? "Stop Meeting" : "Start Meeting"))
                     .font(EchoFont.bodyMedium)
                     .fixedSize()
             }
@@ -337,8 +337,9 @@ public struct MeetingStudioView: View {
             .frame(height: 28)
         }
         .buttonStyle(RecordingButtonStyle(isRecording: isRecording))
+        .disabled(coordinator.isMeetingFinalizing)
         .help(isRecording ? "Stop the current meeting recording" : "Start recording a meeting")
-        .accessibilityLabel(isRecording ? "Stop meeting recording" : "Start meeting recording")
+        .accessibilityLabel(coordinator.isMeetingFinalizing ? "Finalizing meeting transcript" : (isRecording ? "Stop meeting recording" : "Start meeting recording"))
     }
 
     // MARK: - Permission banner
@@ -411,14 +412,15 @@ public struct MeetingStudioView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(EchoTheme.recordingRed)
 
-            Text("Audio Capture Notice:")
+            Text("Meeting notice")
                 .font(EchoFont.captionMedium)
                 .foregroundStyle(EchoTheme.recordingRed)
 
             Text(message)
                 .font(EchoFont.caption)
                 .foregroundStyle(EchoTheme.textSecondary)
-                .lineLimit(1)
+                .lineLimit(3)
+                .help(message)
 
             Spacer(minLength: 8)
 
@@ -431,9 +433,11 @@ public struct MeetingStudioView: View {
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss meeting notice")
         }
         .padding(.horizontal, 16)
-        .frame(height: 34)
+        .padding(.vertical, 6)
+        .frame(minHeight: 34)
         .background(EchoTheme.recordingRed.opacity(0.10))
         .overlay(alignment: .bottom) {
             Rectangle().fill(EchoTheme.recordingRed.opacity(0.25)).frame(height: 1)
@@ -755,6 +759,7 @@ public struct MeetingStudioView: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .padding(14)
+            .disabled(coordinator.isMeetingFinalizing)
             .help("Copy the meeting summary and action items as Markdown")
         }
     }

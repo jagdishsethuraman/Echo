@@ -1,9 +1,18 @@
 import AppKit
 import Foundation
 
+@MainActor
 final class EchoAppDelegate: NSObject, NSApplicationDelegate {
-    func applicationWillTerminate(_ notification: Notification) {
-        AppCoordinator.shared.shutdownGracefully()
+    private var terminationRequested = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationRequested else { return .terminateLater }
+        terminationRequested = true
+        Task {
+            await AppCoordinator.shared.shutdownGracefully()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -26,6 +35,23 @@ struct EchoMain {
             return
         }
         #endif
+
+        if let error = DatabaseManager.shared.startupError {
+            if args.contains("--test") {
+                fputs("\(error.message) (\(error.path))\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Echo couldn't open its database"
+            alert.informativeText = "\(error.message)\n\n\(error.path)"
+            alert.addButton(withTitle: "Quit")
+            alert.addButton(withTitle: "Show in Finder")
+            if alert.runModal() == .alertSecondButtonReturn {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: error.path)])
+            }
+            return
+        }
 
         if args.contains("--test") {
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -72,6 +98,6 @@ struct EchoMain {
         }
         
         print("Echo Speech Intelligence running. Hold ⌃ Control to dictate (or double-tap ⌃ to lock). Meeting Studio opened.")
-        app.run()
+        withExtendedLifetime(delegate) { app.run() }
     }
 }

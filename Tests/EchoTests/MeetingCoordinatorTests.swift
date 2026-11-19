@@ -4,14 +4,21 @@ import Testing
 
 @Suite("MeetingCoordinator", .serialized)
 struct MeetingCoordinatorTests {
-    private func makeCoordinator() -> (coordinator: MeetingCoordinator, database: DatabaseManager, directory: URL) {
+    @MainActor
+    private func makeCoordinator(
+        engine: @escaping TranscriptionService.Engine = { _ in "" },
+        startCapture: @escaping @MainActor () async throws -> Void = {},
+        stopCapture: @escaping @MainActor () async -> Void = {}
+    ) -> (coordinator: MeetingCoordinator, database: DatabaseManager, directory: URL) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("echo-meeting-tests-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let database = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
         let coordinator = MeetingCoordinator(
-            phononRunner: PhononProcessRunner(fermionPath: "/usr/bin/true"),
-            database: database
+            database: database,
+            transcriptionService: TranscriptionService(engine: engine),
+            startCapture: startCapture,
+            stopCapture: stopCapture
         )
         return (coordinator, database, directory)
     }
@@ -166,31 +173,144 @@ struct MeetingCoordinatorTests {
         #expect(received == ["notify me"])
     }
     
-    @Test @MainActor func stopSessionWaitsForInFlightTranscriptions() async {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("echo-meeting-drain-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { remove(directory) }
-        
-        let database = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
-        let service = TranscriptionService(engine: { _ in
-            try await Task.sleep(for: .milliseconds(80))
-            return "final line"
+    @Test @MainActor func finalizationFlushesSpeechAndKeepsItInTheOriginatingMeeting() async throws {
+        let allowTranscription = MeetingTestGate()
+        let startedTranscription = MeetingTestGate()
+        let (coordinator, database, directory) = makeCoordinator(engine: { data in
+            if data.first == 1 {
+                startedTranscription.signal()
+                await allowTranscription.wait()
+                return "last words from the first meeting"
+            }
+            return "words from the second meeting"
         })
+        defer { remove(directory) }
+
+        try await coordinator.startSession(title: "First meeting")
+        let firstID = try #require(coordinator.activeSession?.id)
+        // Speech with no trailing silence only gets submitted by the final flush.
+        coordinator.micVAD.processChunk(pcmData: Data(repeating: 1, count: 16_000), rmsEnergy: 0.25)
+        let stop = Task { await coordinator.stopSession() }
+        await startedTranscription.wait()
+        let overlappingStop = Task { await coordinator.stopSession() }
+
+        try await Task.sleep(for: .milliseconds(5_100))
+        try await coordinator.startSession(title: "Overlapping attempt")
+        #expect(coordinator.activeSession?.id == firstID)
+        #expect(database.fetchSession(id: firstID)?.endTime == nil)
+        allowTranscription.signal()
+
+        let finalized = try #require(await stop.value)
+        let repeated = await overlappingStop.value
+        #expect(repeated?.endTime == finalized.endTime)
+        #expect(finalized.exportMarkdown().contains("last words from the first meeting"))
+        #expect(finalized.endTime != nil)
+
+        try await coordinator.startSession(title: "Second meeting")
+        await coordinator.processSpeechSegment(track: .meeting, pcmData: Data([2]), duration: 1)
+        let second = try #require(await coordinator.stopSession())
+        #expect(second.id != firstID)
+        #expect(second.exportMarkdown().contains("words from the second meeting"))
+        #expect(!second.exportMarkdown().contains("last words from the first meeting"))
+
+        let reopened = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
+        #expect(reopened.fetchSession(id: firstID)?.endTime != nil)
+        #expect(reopened.fetchUtterances(sessionId: firstID).map(\.text) == ["last words from the first meeting"])
+        #expect(reopened.fetchUtterances(sessionId: second.id).map(\.text) == ["words from the second meeting"])
+    }
+
+    @Test @MainActor func concurrentStartPreservesSpeechCapturedDuringStartup() async throws {
+        let captureStarted = MeetingTestGate()
+        let allowStart = MeetingTestGate()
+        weak var recorder: MeetingCoordinator?
+        let (coordinator, database, directory) = makeCoordinator(
+            engine: { _ in "words recorded during startup" },
+            startCapture: {
+                recorder?.enqueueSegment(track: .you, pcmData: Data([1]), duration: 0.5)
+                captureStarted.signal()
+                await allowStart.wait()
+            }
+        )
+        recorder = coordinator
+        defer { remove(directory) }
+
+        let start = Task { try await coordinator.startSession(title: "First start") }
+        await captureStarted.wait()
+        try await coordinator.startSession(title: "Overlapping start")
+        #expect(database.fetchRecentSessions().isEmpty)
+        allowStart.signal()
+        try await start.value
+
+        let stopped = await coordinator.stopSession()
+        #expect(stopped?.title == "First start")
+        #expect(stopped?.segments.map(\.text) == ["words recorded during startup"])
+        #expect(database.fetchRecentSessions().count == 1)
+    }
+
+    @Test @MainActor func failedStartLeavesNoOpenSession() async {
+        let (coordinator, database, directory) = makeCoordinator(startCapture: { throw TestFailure.captureUnavailable })
+        defer { remove(directory) }
+
+        await #expect(throws: TestFailure.captureUnavailable) {
+            try await coordinator.startSession()
+        }
+        #expect(coordinator.activeSession == nil)
+        #expect(coordinator.captureError != nil)
+        #expect(database.fetchRecentSessions().isEmpty)
+    }
+
+    @Test @MainActor func missingEnginePreventsCaptureAndPersistence() async {
+        let (_, database, directory) = makeCoordinator()
+        defer { remove(directory) }
+        var attemptedCapture = false
         let coordinator = MeetingCoordinator(
-            phononRunner: PhononProcessRunner(fermionPath: "/usr/bin/true"),
+            phononRunner: PhononProcessRunner(fermionPath: directory.appendingPathComponent("missing-engine").path),
             database: database,
-            transcriptionService: service
+            startCapture: { attemptedCapture = true },
+            stopCapture: {}
         )
-        
-        coordinator.enqueueSegment(
-            track: .you,
-            pcmData: Data(repeating: 1, count: 3_200),
-            duration: 0.1
-        )
-        
-        let session = await coordinator.stopSession()
-        
-        #expect(session?.segments.compactMap(\.text) == ["final line"])
+
+        await #expect(throws: PhononClientError.self) {
+            try await coordinator.startSession()
+        }
+        #expect(!attemptedCapture)
+        #expect(coordinator.captureError?.contains("missing-engine") == true)
+        #expect(database.fetchRecentSessions().isEmpty)
+    }
+
+    @Test @MainActor func failuresCountTowardsTheSameMeetingAndOtherSegmentsStillPersist() async throws {
+        let (coordinator, database, directory) = makeCoordinator(engine: { data in
+            guard data.first == 1 else { throw TestFailure.decodeFailed }
+            return "successful speech"
+        })
+        defer { remove(directory) }
+
+        try await coordinator.startSession()
+        await coordinator.processSpeechSegment(track: .you, pcmData: Data([1]), duration: 1)
+        await coordinator.processSpeechSegment(track: .meeting, pcmData: Data([2]), duration: 1)
+        await coordinator.processSpeechSegment(track: .meeting, pcmData: Data([3]), duration: 1)
+        let session = try #require(await coordinator.stopSession())
+
+        #expect(coordinator.captureError?.contains("2 meeting segments could not be transcribed") == true)
+        #expect(database.fetchUtterances(sessionId: session.id).map(\.text) == ["successful speech"])
+    }
+}
+
+private enum TestFailure: Error {
+    case captureUnavailable
+    case decodeFailed
+}
+
+private final class MeetingTestGate: Sendable {
+    private let group = DispatchGroup()
+
+    init() { group.enter() }
+
+    func signal() { group.leave() }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            group.notify(queue: .global()) { continuation.resume() }
+        }
     }
 }

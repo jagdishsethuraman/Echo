@@ -23,14 +23,12 @@ public final class PhononProcessRunner: @unchecked Sendable {
         self.timeout = timeout
     }
     
+    public func checkReadiness() throws {
+        _ = try resolveExecutable()
+    }
+
     public func transcribe(fileURL: URL) async throws -> (text: String, latencyMs: Double) {
-        guard let executable = fermionPath else {
-            throw PhononClientError.executableNotFound(EchoSettings.fermionPathHint)
-        }
-        guard FileManager.default.isExecutableFile(atPath: executable) else {
-            throw PhononClientError.executableNotFound(executable)
-        }
-        
+        let executable = try resolveExecutable()
         let clock = ContinuousClock()
         let start = clock.now
         
@@ -56,6 +54,20 @@ public final class PhononProcessRunner: @unchecked Sendable {
         }
         
         return (text: result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), latencyMs: latencyMs)
+    }
+
+    private func resolveExecutable() throws -> String {
+        guard let fermionPath else {
+            throw PhononClientError.executableNotFound(EchoSettings.fermionPathHint)
+        }
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: fermionPath, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              fileManager.isExecutableFile(atPath: fermionPath) else {
+            throw PhononClientError.executableNotFound(fermionPath)
+        }
+        return fermionPath
     }
     
     // MARK: - Process Execution
