@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Non-destructive clipboard injection (`INJ-03`):** Accessibility injection now runs before any clipboard write, so a successful AX insert leaves the user's clipboard untouched. When the paste or typing fallbacks are needed, the full pasteboard contents are snapshotted and restored after success (`restorePreviousClipboard` now defaults to `true`). If every fallback fails, the transcript stays on the clipboard for a manual paste.
 - **Global shortcuts double-firing (`INJ-05`):** The `⇧⌘E/D/C/R` chords are now owned by the global event monitor when Echo is in the background and by the menu key equivalents when Echo is frontmost. Previously both paths ran while the app was focused, so `⇧⌘D` and `⇧⌘R` started and immediately stopped.
 - **Double SwiftUI invalidation (`CORE-02`):** Removed the last manual `objectWillChange.send()` in `MeetingCoordinator.stopSession()`; the `@Published` assignment already notifies observers.
 

@@ -60,10 +60,10 @@ Echo requires Accessibility permissions to monitor the `⌃ Control` hotkey and 
 
 ### ⌨️ Universal Auto-Paste Pipeline
 Echo automatically routes text through an intelligent injection cascade:
-1. **Clipboard Placement:** Writes the transcript to `NSPasteboard.general` (replacing the previous contents by default) and optionally restores them after a successful paste.
-2. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes.
-3. **Synthetic Cmd+V Paste:** Employs `.maskCommand` isolation and settle delay to paste instantaneously across macOS applications.
-4. **Direct Unicode Typing:** Types UTF-16 code units via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events.
+1. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes, without touching the clipboard.
+2. **Clipboard Placement + Synthetic Cmd+V Paste:** Writes the transcript to `NSPasteboard.general`, pastes it with `.maskCommand` isolation and a settle delay, then restores the previous clipboard contents (all pasteboard items).
+3. **Direct Unicode Typing:** Types UTF-16 code units via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events, again restoring the previous clipboard afterwards.
+4. **Manual Fallback:** If every synthetic path fails, the transcript stays on the clipboard so it is never lost.
 
 ### 👥 Bot-Free Dual-Channel Meeting Studio
 - **Acoustic Loopback:** Uses macOS 14+ `ScreenCaptureKit` (`capturesAudio = true`, `excludesCurrentProcessAudio = true`) to capture meeting audio with zero acoustic echo.
@@ -136,10 +136,9 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
                                          ▼
                         ┌─────────────────────────────────┐
                         │       TextInjector Cascade      │
-                        │ 1. Clipboard Placement          │
-                        │ 2. AXDirect Attribute Insert    │
-                        │ 3. Synthetic Cmd+V Auto-Paste   │
-                        │ 4. Unicode Typing Fallback      │
+                        │ 1. AXDirect Attribute Insert    │
+                        │ 2. Cmd+V Paste (restored)       │
+                        │ 3. Unicode Typing Fallback      │
                         └─────────────────────────────────┘
 ```
 

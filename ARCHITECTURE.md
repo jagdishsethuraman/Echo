@@ -104,13 +104,15 @@ Echo uses `fermionresearch/phonon-2` as its core speech engine:
 The text injection pipeline (`TextInjector.swift`) delivers recognized text into any focused macOS application without requiring manual user intervention:
 
 ### Injection Cascade (AX → Paste → Typing)
-1. **Clipboard Placement:** Text is sanitized and written to `NSPasteboard.general`. The previous contents are replaced by default; enabling `restorePreviousClipboard` restores them after a successful paste. The clipboard also acts as a manual fallback if an application blocks synthetic events.
-2. **Path 1 — Accessibility Direct (`tryDirectAccessibilityInjection`):**
-   Queries `kAXFocusedUIElementAttribute` via `AXUIElementCreateSystemWide()`. If `kAXSelectedTextAttribute` is settable, updates the text value instantly with zero keystrokes.
-3. **Path 2 — Synthetic `Cmd+V` Paste (`postCmdV`):**
-   Synthesizes a hardware `kVK_ANSI_V (0x09)` keystroke via `CGEvent`. Cleans lingering modifier keys by explicitly enforcing `.maskCommand` and introduces a **25ms settle delay** (plus a 25ms hold) after the physical `Control` key is released.
-4. **Path 3 — Direct Unicode Keystroke Typing (`typeUnicodeString`):**
-   Iterates through UTF-16 code units and calls `CGEventKeyboardSetUnicodeString` at a **1.5ms cadency**, typing directly into inputs that refuse pasteboard actions.
+1. **Path 1 — Accessibility Direct (`tryDirectAccessibilityInjection`):**
+   Queries `kAXFocusedUIElementAttribute` via `AXUIElementCreateSystemWide()`. If `kAXSelectedTextAttribute` is settable, updates the text value instantly with zero keystrokes. This path never touches the clipboard.
+2. **Path 2 — Clipboard + Synthetic `Cmd+V` Paste (`postCmdV`):**
+   Snapshots the user's pasteboard items (all types), writes the prepared transcript to `NSPasteboard.general`, and synthesizes a hardware `kVK_ANSI_V (0x09)` keystroke via `CGEvent`. Cleans lingering modifier keys by explicitly enforcing `.maskCommand` and introduces a **25ms settle delay** (plus a 25ms hold) after the physical `Control` key is released. On success the snapshot is restored after **60ms** so the target app can read the pasteboard first.
+3. **Path 3 — Direct Unicode Keystroke Typing (`typeUnicodeString`):**
+   Iterates through UTF-16 code units and calls `CGEventKeyboardSetUnicodeString` at a **1.5ms cadency**, typing directly into inputs that refuse pasteboard actions. The clipboard snapshot is restored immediately after typing.
+4. **Manual fallback:** if both synthetic paths fail, the transcript is left on the clipboard so it can still be pasted by hand.
+
+`InjectionOptions.restorePreviousClipboard` defaults to `true`; disabling it intentionally leaves the transcript on the clipboard.
 
 ---
 

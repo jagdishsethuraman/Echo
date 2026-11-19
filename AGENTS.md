@@ -22,7 +22,7 @@ Xcode 27 exposes its tools over MCP; this repo is usually open as a window tab.
 
 ```sh
 swift build
-swift test                     # 96 Swift Testing tests (13 suites)
+swift test                     # 98 Swift Testing tests (13 suites)
 ```
 
 Debug builds can render the main surfaces without screen-recording

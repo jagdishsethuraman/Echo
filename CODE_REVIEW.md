@@ -4,7 +4,7 @@
 
 This document captures the findings that were **not** addressed in `e250a3a`. All four P0 items have since been fixed; their rationale is kept below so the backlog stays self-contained. Each item has an ID so it can be referenced from commits and issues.
 
-This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. Most of the P1/P2 backlog is now genuinely resolved. Seven statuses were downgraded to **partially fixed** because the shipped change does not fully match the claim, and four new findings were added: `INJ-05`, `UX-06`, `DATA-03`, and `BUILD-05`. On 2026-11-19, `INJ-05`, `CORE-02`, `BUILD-05`, and `DOC-01` were fixed in the working tree with regression coverage (96 tests now); `UX-06` and `DATA-03` remain open.
+This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. Most of the P1/P2 backlog is now genuinely resolved. Seven statuses were downgraded to **partially fixed** because the shipped change does not fully match the claim, and four new findings were added: `INJ-05`, `UX-06`, `DATA-03`, and `BUILD-05`. On 2026-11-19, `INJ-03`, `INJ-05`, `CORE-02`, `BUILD-05`, and `DOC-01` were fixed with regression coverage (98 tests now); `UX-06` and `DATA-03` remain open.
 
 > Severity is about user-visible risk, not effort:
 > **P0** = broken or unsafe today · **P1** = architectural debt with real failure modes · **P2** = UX/quality problems · **P3** = build, security, docs, hygiene.
@@ -33,7 +33,7 @@ This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. 
 | LEX-01 | P1 | Text quality | Sanitizer can cascade, breaks on `$`/`\` replacements, ASCII-only boundaries, no regex cache | ✅ Fixed |
 | INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | ✅ Fixed |
 | INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | ✅ Fixed |
-| INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | 🟡 Partial |
+| INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | ✅ Fixed |
 | INJ-04 | P2 | UX | No feedback when microphone or system-audio capture fails; `statusMessage` is never rendered | ✅ Fixed |
 | INJ-05 | P2 | UX | Global shortcuts double-fire when Echo is focused (event monitor + menu key equivalent) | ✅ Fixed |
 | UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | ✅ Fixed |
@@ -76,6 +76,7 @@ This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. 
 | Studio audio-rate invalidation; no shutdown; `/tmp` audio; menu-only shortcuts (UX-02, UX-04, SEC-01, INJ-02) | Isolated meters, `shutdownGracefully`, 0700/0600 temp dir, global key monitor | `56014ea` |
 | Dead `PhononClient`, `BenchmarkResult`, stale process error | Deleted prototype, mapped failures to `processError` | `56014ea` |
 | Shortcut double-fire, last manual invalidation, stale AppleEvents key, doc drift (INJ-05, CORE-02, BUILD-05, DOC-01) | Global monitor owns background chords; menu owns focused chords; removed manual send; plist/changelog/docs re-synced | working tree, 2026-11-19 |
+| Clipboard wiped during injection, even after AX success (INJ-03) | AX runs before clipboard writes; full pasteboard snapshot restored after successful paste/typing; transcript retained only when every fallback fails | working tree, 2026-11-19 |
 
 ---
 
@@ -321,17 +322,17 @@ Originally, `⇧⌘E`, `⇧⌘D`, `⇧⌘C`, `⇧⌘R` were only `NSMenuItem.key
 
 ### INJ-03 · Injection order and clipboard behaviour
 
-**Status:** 🟡 **Partially fixed** (`56014ea`). Synthetic `Cmd+V` paste now precedes direct typing in the default cascade (`AX -> Cmd+V -> Type`), and the AppleScript fallback is gone.
+**Status:** ✅ Fixed (2026-11-19). The cascade is now AX → paste → typing, and the clipboard contract is non-destructive by default.
 
-**What remains:** `restorePreviousClipboard` defaults to `false` (`TextInjector.swift:168`), and `inject` unconditionally calls `clearContents()` and writes the transcript (`:325-327`) even when AX injection succeeds. So the default behavior still destroys the user's clipboard, and `ARCHITECTURE.md:107` still claims "the clipboard is never wiped". Either default restoration on and document the 60 ms paste race, or change the docs to say Echo owns the clipboard during injection.
+- `inject` runs `performAccessibilityInjection` **before** any clipboard write, so a successful AX insert never touches the pasteboard (`accessibilityInjectionLeavesClipboardUntouched`).
+- `InjectionOptions.restorePreviousClipboard` defaults to `true`. When a clipboard-based fallback is required, the injector snapshots every pasteboard item (all types) and restores it after a successful paste (60 ms delay) or typing (immediate).
+- An empty clipboard is snapshotted as `nil` and cleared again after success, rather than being left with the transcript.
+- If both synthetic fallbacks fail, the transcript deliberately stays on the clipboard so the user can paste it manually.
+- `ARCHITECTURE.md` and `README.md` now describe this contract instead of claiming the clipboard is never wiped.
 
-**Where:** `Sources/Echo/Injection/TextInjector.swift:318-392` (current)
+**Where:** `Sources/Echo/Injection/TextInjector.swift`; `Tests/EchoTests/TextInjectorTests.swift`
 
-- Originally, direct Unicode typing (up to 300 chars, ~1.5 ms/char) was tried **before** `Cmd+V`. That order is now inverted; typing remains the last fallback.
-- `clearContents()` still destroys the user's clipboard by default, contradicting the "Permanent Pasteboard Save" wording and `ARCHITECTURE.md:107`.
-- `prepareText` still capitalizes before checking `useDirectTyping`; the typing fallback still types the prepared string when paste would be instant.
-
-**Fix:** cascade AX insert → paste → typing; snapshot and restore the previous pasteboard after a successful paste (or explicitly document that Echo owns the clipboard); add a preference for injection order.
+**Tests:** `restoreClipboardPreservesOriginalContent`, `restoringDisabledLeavesTranscriptOnClipboard`, `accessibilityInjectionLeavesClipboardUntouched`, `failedFallbacksKeepTranscriptOnClipboard`, plus the empty-clipboard assertions in `pasteIsUsedWhenDirectTypingIsDisabled` / `longTranscriptSkipsDirectTyping`.
 
 ### INJ-04 · Silent audio failures; unused status surface
 
@@ -522,7 +523,7 @@ When the most recent session is closed, initialization creates a fresh `"Echo Sp
 - `ARCHITECTURE.md` — injection is now described as AX → paste → typing with the real 25 ms settle/Control behavior; the clipboard paragraph no longer claims it is never wiped; the engine section says CPU by default with `ECHO_FERMION_DEVICE` override.
 - `README.md` — clipboard, Markdown export, CPU default, and the `⇧⌘` Accessibility caveat now match the implementation and menu labels.
 - `ROADMAP.md` — removed the retired brass/Obsidian theme claim, the stale 30 ms/Option settling detail, and the old `Right ⌥` remap reference.
-- `AGENTS.md` — test count updated to 96 tests in 13 suites.
+- `AGENTS.md` — test count updated to 98 tests in 13 suites.
 - `CHANGELOG.md` — added `[Unreleased]` for the `INJ-05`, `CORE-02`, and `BUILD-05` fixes and marked the 1.3.0 Automation entry as superseded.
 
 **Guardrail:** keep the docs in the same commit as behavior changes. The remaining `BUILD-04` item is now a product decision (CPU vs. Metal), not a documentation contradiction.
@@ -550,16 +551,15 @@ When the most recent session is closed, initialization creates a fresh `"Echo Sp
 
 ## Suggested sequencing
 
-Done: QLT-01/REPO-01 (CI), AUD-01, ENG-01/ENG-02, AUD-02–AUD-06, CFG-01, BUILD-01, BUILD-05, DATA-01 (first pass), UX-02, UX-04, SEC-01, SEC-02, LEX-01, INJ-01/INJ-02/INJ-04/INJ-05, UX-01, CORE-02, CORE-03, DOC-01.
+Done: QLT-01/REPO-01 (CI), AUD-01, ENG-01/ENG-02, AUD-02–AUD-06, CFG-01, BUILD-01, BUILD-05, DATA-01 (first pass), UX-02, UX-04, SEC-01, SEC-02, LEX-01, INJ-01/INJ-02/INJ-03/INJ-04/INJ-05, UX-01, CORE-02, CORE-03, DOC-01.
 
 Remaining, in order:
 
-1. **INJ-03** — decide the clipboard contract: default `restorePreviousClipboard` on, or state that Echo owns the clipboard during injection. The docs now describe the current behavior; the product decision remains.
-2. **DATA-02 + DATA-03** — move the live persistence path off `MainActor`, stop persisting empty sessions every launch, and add retention/history.
-3. **BUILD-04** — benchmark CPU vs. Metal/MLX on this machine and make the default deliberate. Docs already say CPU, so this is now a performance task.
-4. **CORE-01** — enable strict concurrency in a branch; fix the remaining 22 `@unchecked Sendable` sites it exposes (start with `HotkeyManager`).
-5. **UX-03, UX-05, UX-06** — intrinsic HUD width, export scope/picker, and word-boundary notes extraction.
-6. **BUILD-02 + REPO-01** — inner-to-outer signing/notarization, formatter config, script/binaries cleanup, Makefile.
+1. **DATA-02 + DATA-03** — move the live persistence path off `MainActor`, stop persisting empty sessions every launch, and add retention/history.
+2. **BUILD-04** — benchmark CPU vs. Metal/MLX on this machine and make the default deliberate. Docs already say CPU, so this is now a performance task.
+3. **CORE-01** — enable strict concurrency in a branch; fix the remaining 22 `@unchecked Sendable` sites it exposes (start with `HotkeyManager`).
+4. **UX-03, UX-05, UX-06** — intrinsic HUD width, export scope/picker, and word-boundary notes extraction.
+5. **BUILD-02 + REPO-01** — inner-to-outer signing/notarization, formatter config, script/binaries cleanup, Makefile.
 
 ---
 
@@ -569,7 +569,7 @@ Re-audited `dd92480`…`bce471d` (1.3.0/1.3.1) against the source on 2026-11-19.
 
 - `swift build` — clean.
 - `swift build -c release` — clean.
-- `swift test` — **96 tests in 13 suites passing** (audio store, converter, VAD, AudioHub, transcription queue, SQLite, word memory, formatting/injection, export, coordination, notes extraction, hotkeys, settings). The new hotkey regression test covers the focused-app path.
+- `swift test` — **98 tests in 13 suites passing** (audio store, converter, VAD, AudioHub, transcription queue, SQLite, word memory, formatting/injection, export, coordination, notes extraction, hotkeys, settings). New coverage includes the focused-app shortcut path and the non-destructive clipboard contract (AX untouched, restore on success, transcript retained on total failure).
 - Static checks: `git diff --stat 78dbd4a..HEAD` (37 source/test files, +4,260/−921), grep for remaining `objectWillChange` (1), `@unchecked Sendable` (22), unused async DB wrappers (production: 0 call sites), and stale plist keys.
 - Duplicate-shortcut dispatch (`INJ-05`) confirmed with a throwaway AppKit harness: one local `.keyDown` monitor plus one `⇧⌘` menu key equivalent produced `monitor=1 menu=1` for a synthesized event.
 - Not exercised (environment-limited): live microphone/system-audio capture and TCC prompts, a real `fermion` binary, and multi-monitor HUD placement. These need a manual pass with the app bundle.

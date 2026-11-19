@@ -5,9 +5,15 @@ import Testing
 
 @Suite("TextInjector")
 struct TextInjectorTests {
+    /// Simulates a target app that refuses both synthetic paste and typing.
+    private final class FailingEventPoster: EventPosterProtocol, @unchecked Sendable {
+        func postCmdV() -> Bool { false }
+        func typeUnicodeString(_ string: String) -> Bool { false }
+    }
+
     private func makeInjector(
         pasteboard: InMemoryPasteboard = InMemoryPasteboard(),
-        poster: MockEventPoster = MockEventPoster(),
+        poster: EventPosterProtocol = MockEventPoster(),
         trusted: Bool = false
     ) -> TextInjector {
         TextInjector(
@@ -66,7 +72,7 @@ struct TextInjectorTests {
         
         #expect(result.success)
         #expect(result.method == .syntheticPaste)
-        #expect(pasteboard.string(forType: .string) == "Hello world ")
+        #expect(pasteboard.string(forType: .string) == "old clipboard")
         #expect(poster.postedCount == 1)
         #expect(poster.typedCount == 0)
     }
@@ -83,7 +89,7 @@ struct TextInjectorTests {
         
         #expect(result.success)
         #expect(result.method == .directTyping)
-        #expect(pasteboard.string(forType: .string) == "Hello world ")
+        #expect(pasteboard.string(forType: .string) == "old clipboard")
         #expect(poster.typedCount == "Hello world ".count)
         #expect(poster.postedCount == 0)
     }
@@ -117,7 +123,7 @@ struct TextInjectorTests {
         #expect(result.method == .syntheticPaste)
         #expect(poster.postedCount == 1)
         #expect(poster.typedCount == 0)
-        #expect(pasteboard.string(forType: .string) == "Meeting notes ")
+        #expect(pasteboard.string(forType: .string) == nil)
     }
     
     @Test func longTranscriptSkipsDirectTyping() async {
@@ -132,18 +138,51 @@ struct TextInjectorTests {
         #expect(result.method == .syntheticPaste)
         #expect(poster.typedCount == 0)
         #expect(poster.postedCount == 1)
-        #expect(pasteboard.string(forType: .string) == "A" + String(repeating: "a", count: 319) + " ")
+        #expect(pasteboard.string(forType: .string) == nil)
     }
     
-    @Test func allPathsKeepTranscriptOnClipboard() async {
-        // Even when AX is unavailable, every method leaves the prepared text
-        // on the pasteboard so nothing is lost if typing or pasting fails.
-        let pasteboard = InMemoryPasteboard()
+    @Test func restoringDisabledLeavesTranscriptOnClipboard() async {
+        let pasteboard = InMemoryPasteboard(initialString: "old clipboard")
         let injector = makeInjector(pasteboard: pasteboard)
         
-        _ = await injector.inject(text: "copied text")
-        
+        _ = await injector.inject(
+            text: "copied text",
+            options: InjectionOptions(restorePreviousClipboard: false)
+        )
+
         #expect(pasteboard.string(forType: .string) == "Copied text ")
-        #expect(pasteboard.changeCount > 0)
+    }
+
+    @Test func accessibilityInjectionLeavesClipboardUntouched() async {
+        let pasteboard = InMemoryPasteboard(initialString: "crucial user clipboard content")
+        let poster = MockEventPoster()
+        let injector = TextInjector(
+            pasteboard: pasteboard,
+            eventPoster: poster,
+            isAccessibilityTrusted: { true },
+            accessibilityInjector: { _ in true }
+        )
+        
+        let result = await injector.inject(text: "hello world")
+
+        #expect(result.success)
+        #expect(result.method == .accessibilityDirect)
+        #expect(pasteboard.string(forType: .string) == "crucial user clipboard content")
+        #expect(pasteboard.changeCount == 1)
+        #expect(poster.postedCount == 0)
+        #expect(poster.typedCount == 0)
+    }
+
+    @Test func failedFallbacksKeepTranscriptOnClipboard() async {
+        let pasteboard = InMemoryPasteboard(initialString: "old clipboard")
+        let injector = makeInjector(pasteboard: pasteboard, poster: FailingEventPoster())
+
+        let result = await injector.inject(text: "copied text")
+
+        #expect(result.success)
+        #expect(result.method == .clipboardOnly)
+        // Nothing reached the focused app, so the transcript must survive on
+        // the clipboard for a manual paste.
+        #expect(pasteboard.string(forType: .string) == "Copied text ")
     }
 }
