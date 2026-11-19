@@ -1,6 +1,6 @@
 # Echo — Code Review: Remaining Improvements
 
-**Reviewed:** 2026-11-17 · **Last re-review:** 2026-11-19 · **Baseline commit:** `e250a3a` · **P0 fixed through:** `78dbd4a` · **Latest reviewed:** `1d9ceb5` (v1.4.0) · **Scope:** `Sources/Echo` (33 files, ~7.1k LOC), `Tests/EchoTests` (14 suites, 113 tests), build scripts, docs
+**Reviewed:** 2026-11-17 · **Last re-review:** 2026-11-19 · **Baseline commit:** `e250a3a` · **P0 fixed through:** `78dbd4a` · **Latest reviewed:** `229b437` (v1.4.1) · **Scope:** `Sources/Echo` (33 files, ~7.4k LOC), `Tests/EchoTests` (14 suites, 122 tests), build scripts, docs
 
 This document captures the findings that were **not** addressed in `e250a3a`. All four P0 items have since been fixed; their rationale is kept below so the backlog stays self-contained. Each item has an ID so it can be referenced from commits and issues.
 

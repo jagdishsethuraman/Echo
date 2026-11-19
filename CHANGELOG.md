@@ -7,13 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Unreleased
+## [1.4.1] - 2026-11-19
 
 ### Fixed
-
-- Meeting finalization waits for accepted speech segments to finish processing. Meeting Studio and the menu bar show when the transcript is being finalized, including during a normal quit.
-- Meetings check for the local speech executable before recording and surface transcription errors that occur during capture.
-- SQLite migrations commit schema changes together with their version marker. Startup reports incompatible or incomplete schemas so users can locate and recover the affected database.
+- **Meeting finalization & transcript drain:** Audio and transcript finalization waits for accepted speech segments to finish processing before releasing resources. Meeting Studio and menu bar indicate when transcript is being finalized, including during a normal quit.
+- **Speech engine readiness & error surfaces:** Validates local speech executable before recording starts and surfaces per-segment transcription errors during capture rather than silently dropping audio.
+- **Transactional SQLite migrations:** Migrations commit schema changes atomically with their version marker; rolls back failed migrations and reports startup schema mismatches.
+- **Transition serialization:** Added transition locks to prevent duplicate session allocation on rapid start/stop toggles.
 
 ## [1.4.0] - 2026-11-19
 
