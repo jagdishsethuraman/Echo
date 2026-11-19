@@ -215,4 +215,3 @@ Cache extraction by segment ID, process only appended or changed text, and bench
 3. Dictate into a native editor and a browser field. Switch focus during recognition, copy unrelated text during restore, and include an emoji. Check the destination, clipboard and saved history independently.
 4. Edit a task, mark it complete, switch meetings and relaunch. Compare Studio Copy, Studio Export and history export against the same saved meeting.
 5. Run a long two-channel fixture faster than the engine can drain it. Record queued audio duration, memory, finalization latency and UI update time. Use the results to set queue limits and a documented overload policy.
-
