@@ -33,7 +33,7 @@ This document details the internal systems architecture, audio pipelines, data f
    ┌───────────────────────────────────────────────────────────────────────────────────────┐
    │                                 PhononProcessRunner                                   │
    │                   • fermionresearch/phonon-2 (158 MB INT6 Parakeet-TDT)              │
-   │                   • Apple Silicon Metal / MLX GPU Acceleration                        │
+   │                   • CPU by default; override with ECHO_FERMION_DEVICE                 │
    │                   • Sub-150ms Decoding Latency (37.7x Real-Time Factor)               │
    └───────────────────────────────────────────┬───────────────────────────────────────────┘
                                                │
@@ -91,7 +91,7 @@ Echo operates two isolated, high-performance audio capture pipelines concurrentl
 Echo uses `fermionresearch/phonon-2` as its core speech engine:
 - **Model Architecture:** FastConformer Token-and-Duration Transducer (TDT) 0.6B.
 - **Quantization:** INT6 (158 MB total disk and RAM footprint).
-- **Inference Runtime:** Local process runner invoking `fermion` on Apple Silicon Metal/MLX loopback.
+- **Inference Runtime:** Local process runner invoking `fermion`. The device is selected with `ECHO_FERMION_DEVICE` and defaults to `cpu`; Metal/MLX acceleration is not enabled by default yet (`BUILD-04`).
 - **Performance Characteristics:**
   - Decodes 20.01 seconds of speech in **0.53 seconds** (pure model decode), achieving a **37.7x Real-Time Factor (RTF)**.
   - Zero silence hallucinations: FastConformer-TDT inherently suppresses phantom tokens during background noise or silence.
@@ -103,12 +103,12 @@ Echo uses `fermionresearch/phonon-2` as its core speech engine:
 
 The text injection pipeline (`TextInjector.swift`) delivers recognized text into any focused macOS application without requiring manual user intervention:
 
-### 3-Tier Cascade
-1. **Clipboard Placement:** Text is sanitized and declared on `NSPasteboard.general`. The clipboard is never wiped, guaranteeing a 100% manual fallback if an application blocks synthetic events.
+### Injection Cascade (AX → Paste → Typing)
+1. **Clipboard Placement:** Text is sanitized and written to `NSPasteboard.general`. The previous contents are replaced by default; enabling `restorePreviousClipboard` restores them after a successful paste. The clipboard also acts as a manual fallback if an application blocks synthetic events.
 2. **Path 1 — Accessibility Direct (`tryDirectAccessibilityInjection`):**
    Queries `kAXFocusedUIElementAttribute` via `AXUIElementCreateSystemWide()`. If `kAXSelectedTextAttribute` is settable, updates the text value instantly with zero keystrokes.
 3. **Path 2 — Synthetic `Cmd+V` Paste (`postCmdV`):**
-   Synthesizes a hardware `kVK_ANSI_V (0x09)` keystroke via `CGEvent`. Cleans lingering modifier keys by explicitly enforcing `.maskCommand` and introduces a **30ms settle delay** after the physical `Option` key is released.
+   Synthesizes a hardware `kVK_ANSI_V (0x09)` keystroke via `CGEvent`. Cleans lingering modifier keys by explicitly enforcing `.maskCommand` and introduces a **25ms settle delay** (plus a 25ms hold) after the physical `Control` key is released.
 4. **Path 3 — Direct Unicode Keystroke Typing (`typeUnicodeString`):**
    Iterates through UTF-16 code units and calls `CGEventKeyboardSetUnicodeString` at a **1.5ms cadency**, typing directly into inputs that refuse pasteboard actions.
 

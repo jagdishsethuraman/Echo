@@ -60,7 +60,7 @@ Echo requires Accessibility permissions to monitor the `⌃ Control` hotkey and 
 
 ### ⌨️ Universal Auto-Paste Pipeline
 Echo automatically routes text through an intelligent injection cascade:
-1. **Permanent Pasteboard Save:** Declares text on `NSPasteboard.general` with optional non-destructive restoration of previous clipboard contents.
+1. **Clipboard Placement:** Writes the transcript to `NSPasteboard.general` (replacing the previous contents by default) and optionally restores them after a successful paste.
 2. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes.
 3. **Synthetic Cmd+V Paste:** Employs `.maskCommand` isolation and settle delay to paste instantaneously across macOS applications.
 4. **Direct Unicode Typing:** Types UTF-16 code units via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events.
@@ -69,7 +69,7 @@ Echo automatically routes text through an intelligent injection cascade:
 - **Acoustic Loopback:** Uses macOS 14+ `ScreenCaptureKit` (`capturesAudio = true`, `excludesCurrentProcessAudio = true`) to capture meeting audio with zero acoustic echo.
 - **Rolling Energy VAD:** Automatically segments speech upon 600ms natural silence boundaries.
 - **Graphite Frost Interface:** Native `NSVisualEffectView` frosted dark-gray surfaces with a cool frost-blue accent, using a 62/38 split layout separating conversation streams from live AI notes.
-- **1-Click Obsidian Export:** Exports structured Markdown notes directly to your Second Brain or clipboard.
+- **Markdown Notes Export:** Copies the current session as Markdown and writes a `.md` file to the configurable export folder (default `~/Documents/Echo Meetings`).
 
 ### 🧠 Word Memory & Speech Lexicon Engine
 - **Persistent Vocabulary:** Built-in SQLite database stores phonetic replacements (e.g. `"phone on"` → `"Phonon"`, `"anti gravity"` → `"Antigravity"`).
@@ -88,6 +88,8 @@ Echo automatically routes text through an intelligent injection cascade:
 | **`⇧⌘C`** | **Copy Last Dictation** | Instantly re-copies most recent transcript to clipboard |
 | **`⇧⌘R`** | **Start/Stop Meeting** | Begin or conclude dual-channel meeting recording |
 | **`⌘Q`** | **Quit Echo** | Conclude audio streams and exit application |
+
+The `⇧⌘` chords require Accessibility access to work while another app is frontmost. When Echo itself is focused they are dispatched by the app menu.
 
 ---
 
@@ -120,7 +122,7 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
    ┌───────────────────────────┐                   ┌───────────────────────────┐
    │ CoreAudio / ScreenCapture │                   │ Phonon-2 Local STT Engine │
    │ • 16kHz Mic Tap           │                   │ • FastConformer-TDT INT6  │
-   │ • Speaker Loopback        │                   │ • Metal / MLX Accelerated │
+   │ • Speaker Loopback        │                   │ • CPU (configurable)      │
    │ • Rolling 0.6s Energy VAD │                   │ • Sub-150ms Latency       │
    └─────────────┬─────────────┘                   └─────────────┬─────────────┘
                  │                                               │

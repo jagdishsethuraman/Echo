@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Global shortcuts double-firing (`INJ-05`):** The `⇧⌘E/D/C/R` chords are now owned by the global event monitor when Echo is in the background and by the menu key equivalents when Echo is frontmost. Previously both paths ran while the app was focused, so `⇧⌘D` and `⇧⌘R` started and immediately stopped.
+- **Double SwiftUI invalidation (`CORE-02`):** Removed the last manual `objectWillChange.send()` in `MeetingCoordinator.stopSession()`; the `@Published` assignment already notifies observers.
+
+### Removed
+- **Stale AppleEvents declaration (`BUILD-05`):** Dropped `NSAppleEventsUsageDescription` from `Info.plist` now that the AppleScript fallback is gone.
+
+---
+
 ## [1.3.1] - 2026-11-18
 
 ### Fixed & Hardened
@@ -38,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **SQLite schema hardening & lifecycle management (`DATA-02`):** Configured 3-second busy timeout (`PRAGMA busy_timeout = 3000; sqlite3_busy_timeout`), enforced foreign key constraints (`PRAGMA foreign_keys = ON`), added `ON DELETE CASCADE` from utterances to sessions, implemented `user_version` schema migration tracking, added `deleteSession()`, WAL checkpointing, and background `dbQueue` async methods.
 - **Product model separation & session restore (`DATA-01`):** Startup no longer resurrects closed sessions (`endTime != nil`) as active recording streams. Quick dictations while not in a meeting are preserved in the standalone SQLite dictations log rather than polluting meeting sessions.
 - **Concurrency hardening (`CORE-01`):** Added lock-synchronized callback closures in `SystemAudioCapture`, `AudioEngineManager`, and `MeetingCoordinator` to prevent cross-queue races; marked `WordMemoryState` with `@MainActor`.
-- **Automation TCC declaration (`SEC-02`):** Added `NSAppleEventsUsageDescription` in `Info.plist` to declare AppleEvents usage for universal synthetic paste injection.
+- **Automation TCC declaration (`SEC-02`, superseded):** Added `NSAppleEventsUsageDescription` in `Info.plist` for the AppleScript paste fallback. The fallback and the declaration were both removed in 1.3.1/Unreleased.
 - **Safe SQLite database fallback:** Added graceful `NSTemporaryDirectory()` fallback in `DatabaseManager` ensuring tables are created and operations proceed even under restricted sandbox permissions.
 - **Accessibility injection safety (`CORE-03`):** Guarded `focusedElement` with `CFGetTypeID` against unexpected CFTypes before casting to `AXUIElement`.
 - **Eliminated double SwiftUI invalidation (`CORE-02`):** Removed redundant manual `objectWillChange.send()` calls when mutating `@Published` properties.

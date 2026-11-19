@@ -250,8 +250,9 @@ public final class MeetingCoordinator: ObservableObject, @unchecked Sendable {
         return await MainActor.run {
             guard var session = self.activeSession else { return nil }
             session.endTime = Date()
+            // Assigning the @Published property already invalidates observers;
+            // a manual objectWillChange.send() here would notify twice.
             self.activeSession = session
-            self.objectWillChange.send()
             database.saveSession(session)
             return session
         }

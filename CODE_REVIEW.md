@@ -1,8 +1,10 @@
 # Echo — Code Review: Remaining Improvements
 
-**Reviewed:** 2026-11-17 · **Baseline commit:** `e250a3a` · **P0 fixed through:** `78dbd4a` · **Scope:** `Sources/Echo` (27 files, ~4k LOC), build scripts, tests, docs
+**Reviewed:** 2026-11-17 · **Last re-review:** 2026-11-19 · **Baseline commit:** `e250a3a` · **P0 fixed through:** `78dbd4a` · **Latest reviewed:** `bce471d` (v1.3.1) · **Scope:** `Sources/Echo` (33 files, ~6.8k LOC), `Tests/EchoTests` (13 suites), build scripts, docs
 
 This document captures the findings that were **not** addressed in `e250a3a`. All four P0 items have since been fixed; their rationale is kept below so the backlog stays self-contained. Each item has an ID so it can be referenced from commits and issues.
+
+This revision audits the 1.3.0/1.3.1 work (`dd92480`…`bce471d`) line by line. Most of the P1/P2 backlog is now genuinely resolved. Seven statuses were downgraded to **partially fixed** because the shipped change does not fully match the claim, and four new findings were added: `INJ-05`, `UX-06`, `DATA-03`, and `BUILD-05`. On 2026-11-19, `INJ-05`, `CORE-02`, `BUILD-05`, and `DOC-01` were fixed in the working tree with regression coverage (96 tests now); `UX-06` and `DATA-03` remain open.
 
 > Severity is about user-visible risk, not effort:
 > **P0** = broken or unsafe today · **P1** = architectural debt with real failure modes · **P2** = UX/quality problems · **P3** = build, security, docs, hygiene.
@@ -20,31 +22,35 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | AUD-02 | P1 | Architecture | Two independent `AVAudioEngine`s contend for the microphone | ✅ Fixed |
 | AUD-03 | P1 | Architecture | Audio/event callbacks are single-consumer closures and silently overwrite each other | ✅ Fixed |
 | AUD-04 | P1 | Quality | VAD has no pre-roll, so word onsets are clipped | ✅ Fixed |
-| AUD-05 | P1 | Correctness | `stopSession()` returns before flushed audio is transcribed | ✅ Fixed |
+| AUD-05 | P1 | Correctness | `stopSession()` returns before flushed audio is transcribed | ✅ Fixed (5 s drain cap) |
 | AUD-06 | P1 | Quality | System-audio meter assumes Int16; capture failures stop silently | ✅ Fixed |
 | ENG-02 | P1 | Performance | Unbounded concurrent `fermion` processes per segment | ✅ Fixed |
 | DATA-01 | P1 | Product model | Quick dictations are appended to the active meeting; startup restores yesterday's session | ✅ Fixed |
-| DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | ✅ Fixed |
-| CORE-01 | P1 | Concurrency | Pervasive `@unchecked Sendable`; no strict-concurrency checking | ✅ Fixed |
+| DATA-02 | P1 | Storage | SQLite runs on the main thread; no migrations, busy timeout, foreign keys, or history UI | 🟡 Partial |
+| CORE-01 | P1 | Concurrency | Pervasive `@unchecked Sendable`; no strict-concurrency checking | 🟡 Partial |
 | CORE-02 | P1 | SwiftUI | `objectWillChange.send()` before mutating `@Published` causes double invalidation | ✅ Fixed |
 | CORE-03 | P1 | Safety | Force-cast `focusedElement as! AXUIElement` in the injection path | ✅ Fixed |
 | LEX-01 | P1 | Text quality | Sanitizer can cascade, breaks on `$`/`\` replacements, ASCII-only boundaries, no regex cache | ✅ Fixed |
 | INJ-01 | P2 | UX | Global `⌃ Control` hotkey fires on every Control shortcut; no cancel or speech gate | ✅ Fixed |
-| INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | Open |
-| INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | Open |
+| INJ-02 | P2 | UX | Documented global shortcuts are menu key equivalents and only work when Echo is focused | ✅ Fixed |
+| INJ-03 | P2 | UX | Typing is preferred over paste; user clipboard is wiped despite "non-destructive" docs | 🟡 Partial |
 | INJ-04 | P2 | UX | No feedback when microphone or system-audio capture fails; `statusMessage` is never rendered | ✅ Fixed |
+| INJ-05 | P2 | UX | Global shortcuts double-fire when Echo is focused (event monitor + menu key equivalent) | ✅ Fixed |
 | UX-01 | P2 | UI | "Live AI Executive Notes" is hardcoded placeholder content | ✅ Fixed |
-| UX-02 | P2 | Performance | Entire Studio view invalidates at audio rate (~43 Hz) | Open |
-| UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | ✅ Fixed |
-| UX-04 | P2 | Lifecycle | No graceful shutdown: audio not stopped, session `endTime` not written, temp files left behind | Open |
-| SEC-01 | P2 | Privacy | Sensitive WAVs are written to world-readable `/tmp` and may survive crashes | Open |
-| UX-05 | P2 | UX | "Export All Notes" exports only the active session | Open |
+| UX-02 | P2 | Performance | Entire Studio view invalidates at audio rate (~43 Hz) | ✅ Fixed |
+| UX-03 | P2 | UI | HUD width is guessed from character count; `NSScreen.main` is wrong on multi-monitor setups | 🟡 Partial (anchoring fixed) |
+| UX-04 | P2 | Lifecycle | No graceful shutdown: audio not stopped, session `endTime` not written, temp files left behind | ✅ Fixed |
+| SEC-01 | P2 | Privacy | Sensitive WAVs are written to world-readable `/tmp` and may survive crashes | ✅ Fixed |
+| UX-05 | P2 | UX | "Export All Notes" exports only the active session | 🟡 Partial |
+| UX-06 | P2 | UI quality | Heuristic notes extractor matches trigger substrings and over-extracts decisions/actions | 🆕 Open |
 | SEC-02 | P3 | Permissions | AppleScript fallback triggers Automation TCC but the bundle lacks `NSAppleEventsUsageDescription` | ✅ Fixed |
 | BUILD-01 | P3 | Reproducibility | `Info.plist` and bundle assembly are not in version control | ✅ Fixed |
 | BUILD-02 | P3 | Distribution | `codesign --deep` guidance; no hardened runtime or notarization | Open |
-| BUILD-03 | P3 | Cleanup | Dead code: `PhononClient`, `BenchmarkResult`, unused enum case, unused field | Open |
+| BUILD-03 | P3 | Cleanup | Dead code: `PhononClient`, `BenchmarkResult`, unused enum case, unused field | ✅ Fixed |
 | BUILD-04 | P3 | Performance | `FERMION_DEVICE=cpu` contradicts documented Metal/MLX acceleration | Open |
-| DOC-01 | P3 | Docs | README/ARCHITECTURE/ROADMAP/CHANGELOG disagree with the code | Open |
+| BUILD-05 | P3 | Cleanup | `NSAppleEventsUsageDescription` remains after AppleScript removal; changelog contradicts itself | ✅ Fixed |
+| DATA-03 | P3 | Storage | Every launch persists a new empty "Echo Speech Stream" session; no retention/compaction | 🆕 Open |
+| DOC-01 | P3 | Docs | README/ARCHITECTURE/ROADMAP/CHANGELOG disagree with the code | ✅ Fixed |
 | REPO-01 | P3 | Hygiene | No formatter/linter config, `.DS_Store`, simulator scripts with absolute paths | Open |
 | REPO-02 | P3 | Testing | `test_injection.swift` fails on a stale assertion (pre-existing) | ✅ Fixed |
 
@@ -58,7 +64,18 @@ This document captures the findings that were **not** addressed in `e250a3a`. Al
 | Hardcoded engine, database and export paths (CFG-01) | `EchoSettings` resolution + `~/.echo` DB fallback + configurable export folder | `5feeef0` |
 | Process runner could deadlock, had no timeout, ignored cancellation (ENG-01) | Concurrent stdout/stderr drains, watchdog with SIGTERM→SIGKILL, cancellation propagation | `7af83c3` |
 | Partial transcription re-decoded the whole recording every 650 ms (AUD-01) | Chunked PCM store, 12 s live window, idle-tick skip, 10 min cap | `c244222` |
-| `Tests/` was empty and `--test` always reported success (QLT-01, REPO-02) | 63 Swift Testing cases, CI workflow, hermetic harness fixes | `78dbd4a` |
+| `Tests/` was empty and `--test` always reported success (QLT-01, REPO-02) | Swift Testing suite, CI workflow, hermetic harness fixes | `78dbd4a` |
+| Two microphone engines; single-consumer audio callbacks (AUD-02/AUD-03) | Reference-counted `AudioHub` with token-addressed fan-out | `dd92480` |
+| Clipped onsets; unbounded per-segment inference (AUD-04/AUD-05/ENG-02) | 300 ms VAD pre-roll, synchronous flush, `TranscriptionService` with FIFO + drain | `dd92480` |
+| System meter read Int16 blindly; capture errors were silent (AUD-06) | Converted-buffer RMS + `onCaptureFailed` through `AudioHub` error observers | `6995879` |
+| SQLite had no pragmas/migrations and ran on the caller thread (DATA-02, partial) | WAL, busy timeout, foreign keys + cascade, `user_version`, async wrappers | `6995879` |
+| Word-memory cascade, template corruption, recompilation (LEX-01) | Sorted precompiled regexes, non-overlapping single pass, literal insertion | `6995879` |
+| Control chord collisions and HUD screen selection (INJ-01, UX-03 partial) | Esc-to-cancel, chord filter, discard button, mouse-screen anchoring | `441dc6d` |
+| Hardcoded "AI" notes (UX-01) | `MeetingNotesExtractor` derives decisions/action items from the transcript | `4b824d7` |
+| Silent mic failures and invisible status (INJ-04) | Permission request, error banners, live `statusMessage`, AX refresh on activate | `c5f30d3` |
+| Studio audio-rate invalidation; no shutdown; `/tmp` audio; menu-only shortcuts (UX-02, UX-04, SEC-01, INJ-02) | Isolated meters, `shutdownGracefully`, 0700/0600 temp dir, global key monitor | `56014ea` |
+| Dead `PhononClient`, `BenchmarkResult`, stale process error | Deleted prototype, mapped failures to `processError` | `56014ea` |
+| Shortcut double-fire, last manual invalidation, stale AppleEvents key, doc drift (INJ-05, CORE-02, BUILD-05, DOC-01) | Global monitor owns background chords; menu owns focused chords; removed manual send; plist/changelog/docs re-synced | working tree, 2026-11-19 |
 
 ---
 
@@ -166,15 +183,21 @@ Audio is only buffered after energy crosses the threshold, so the first phoneme 
 
 ### AUD-05 · `stopSession()` races the final transcription
 
-**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:153-171`, `Sources/Echo/Audio/VoiceActivityDetector.swift:90-94`
+**Status:** ✅ Fixed (`dd92480`). `flush()` now delivers the final segment synchronously, `TranscriptionService` tracks every submission, and `stopSession()` waits for the queue to drain before writing `endTime`. The shared FIFO service also serializes the two VADs.
 
-`flush()` dispatches the segment callback asynchronously, then `stopSession()` immediately writes `endTime` and returns. The final utterance is appended after the session "ended" and can miss the export. Two VADs also produce segments whose transcription order is not guaranteed.
+**Residual:** the drain timeout is 5 s (`MeetingCoordinator.swift:245`). A slow segment past that cap is appended after `endTime`; it still reaches SQLite, but it can miss the in-memory/export snapshot. Consider surfacing the truncated drain or raising the cap for the final segment.
+
+**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:233-258`, `Sources/Echo/Audio/VoiceActivityDetector.swift:87-98`
+
+The original race: `flush()` dispatched the segment callback asynchronously, then `stopSession()` immediately wrote `endTime` and returned. Two VADs also produced segments whose transcription order was not guaranteed.
 
 **Fix:** track in-flight transcription tasks, await them in `stopSession()` (with a timeout), and serialize transcription through an ordered queue.
 
 ### AUD-06 · System-audio meter assumes Int16; capture failures are silent
 
-**Status:** ✅ Fixed. ScreenCaptureKit sample buffers are decoded through `AudioBufferConverter.pcmBuffer` and `calculateRMS`; `didStopWithError` invokes `onCaptureFailed` and fans out via `AudioHub.addErrorObserver`.
+**Status:** ✅ Fixed (`6995879`). ScreenCaptureKit sample buffers are decoded through `AudioBufferConverter.pcmBuffer` and `calculateRMS`; `didStopWithError` invokes `onCaptureFailed` and fans out via `AudioHub.addErrorObserver`.
+
+**Residual:** `didStopWithError` clears `isCapturing` but leaves the failed `SCStream` in `SystemAudioCapture.stream` (`SystemAudioCapture.swift:106-112`), and `AudioHub` keeps its system-audio retain count. A dropped stream therefore cannot be restarted until the owner releases and re-retains, and there is no auto-restart. Minor, but the Studio banner is the only recovery path.
 
 **Where:** `Sources/Echo/Audio/SystemAudioCapture.swift:79-98`, `:100-104`
 
@@ -194,7 +217,9 @@ Each VAD completion spawns `Task { await processSpeechSegment(...) }`, which lau
 
 ### DATA-01 · Dictation and meetings share one timeline
 
-**Status:** ✅ Fixed. Closed sessions (`endTime != nil`) are not revived as active recording streams on startup; standalone quick dictations are saved to SQLite dictations log and do not pollute active meeting timelines.
+**Status:** ✅ Fixed (`6995879`). Closed sessions (`endTime != nil`) are not revived as active recording streams on startup; standalone quick dictations are saved to the SQLite dictation log with `sessionId == nil` (`AppCoordinator.swift:358-372`) and no longer require an active meeting. A quick dictation during a meeting is intentionally appended to that meeting.
+
+**Residual:** when the last session is closed, startup creates and persists a brand-new empty "Echo Speech Stream" session (`MeetingCoordinator.swift:73-77`). See `DATA-03`.
 
 **Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:33-42`, `:104-132`; `Sources/Echo/AppCoordinator.swift:262`
 
@@ -204,7 +229,13 @@ Startup restores the most recent session as `activeSession`, so today's quick di
 
 ### DATA-02 · SQLite lifecycle and schema hardening
 
-**Status:** ✅ Fixed. Configured `PRAGMA busy_timeout = 3000` + `sqlite3_busy_timeout`, `PRAGMA foreign_keys = ON`, `FOREIGN KEY ... ON DELETE CASCADE` on utterances, `PRAGMA user_version` migrations, `deleteSession()` with cascading cleanup, `checkpointWAL()`, and dedicated `dbQueue` async wrappers.
+**Status:** 🟡 **Partially fixed** (`6995879`). Configured `PRAGMA busy_timeout = 3000` + `sqlite3_busy_timeout`, `PRAGMA foreign_keys = ON`, `FOREIGN KEY ... ON DELETE CASCADE` on utterances, `PRAGMA user_version` migrations, `deleteSession()` with cascading cleanup, `checkpointWAL()`, and dedicated `dbQueue` async wrappers.
+
+**What remains:**
+- The async wrappers are **unused in production**. The live path still calls synchronous `saveSession`/`saveUtterance` from `appendTranscribedSegment` on `MainActor` (`MeetingCoordinator.swift:167-177`), so every utterance blocks the main thread on SQLite I/O. Either use `saveSessionAsync`/`saveUtteranceAsync` there or move the coordinator's persistence to a storage actor.
+- The migration runner only knows schema v1; there is no v2 hook or migration test.
+- No retention/compaction: `deleteSession` is never called from the app, and WAL growth is only checkpointed (not bounded). There is still no session-history/delete UI.
+- Central SQLite error handling is still `print`-only; failures are not surfaced.
 
 **Where:** `Sources/Echo/Storage/DatabaseManager.swift` (all public methods)
 
@@ -219,7 +250,9 @@ Startup restores the most recent session as `activeSession`, so today's quick di
 
 ### CORE-01 · `@unchecked Sendable` everywhere
 
-**Status:** ✅ Fixed. Synchronized cross-thread callback closures with locks in `SystemAudioCapture`, `AudioEngineManager`, and `MeetingCoordinator`; marked UI state `WordMemoryState` with `@MainActor`.
+**Status:** 🟡 **Partially fixed** (`6995879`, `56014ea`). Synchronized cross-thread callback closures with locks in `SystemAudioCapture`, `AudioEngineManager`, and `MeetingCoordinator`; marked UI state `WordMemoryState` with `@MainActor`; added `CaptureFlag` for the audio-thread read in `AppCoordinator`. These are real improvements and remove several concrete races.
+
+**What remains:** the package still declares `swiftLanguageModes: [.v5]` and 22 `@unchecked Sendable` declarations. Several remain unsynchronized, e.g. `HotkeyManager`'s mutable callback/state properties (monitor threads read them while `AppCoordinator` writes from `MainActor`) and `MeetingCoordinator`'s `@Published activeSession` accessed from async tasks. Strict concurrency is still the way to validate the remaining annotations. Lower severity now, but the finding is not closed.
 
 **Where:** `DatabaseManager`, `WordMemoryEngine`, `WordMemoryState`, `MeetingCoordinator`, `AudioEngineManager`, `DualChannelCoordinator`, `SystemAudioCapture`, `HotkeyManager`, `TextInjector`, `PhononProcessRunner`, `PhononClient`
 
@@ -229,13 +262,13 @@ The annotation is used to silence the compiler rather than to document a real gu
 
 ### CORE-02 · Double SwiftUI invalidation
 
-**Status:** ✅ Fixed. Removed redundant manual `objectWillChange.send()` calls; `@Published` property wrapper handles notification.
+**Status:** ✅ Fixed (2026-11-19). The remaining manual send in `stopSession()` was removed; assigning the `@Published` `activeSession` is now the only invalidation. `grep objectWillChange Sources` is empty apart from the explanatory comment.
 
-**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:134`, `:156`, `:178`
+**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:254` (remaining); original sites were `:134`, `:156`, `:178`
 
 Calling `objectWillChange.send()` before mutating an `@Published` property sends two change notifications and can render a half-updated state.
 
-**Fix:** mutate the `@Published` value only; delete the manual sends.
+**Fix:** delete the remaining manual send; the `activeSession` assignment already publishes.
 
 ### CORE-03 · Force-cast on the accessibility element
 
@@ -276,23 +309,27 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### INJ-02 · "Global" shortcuts are not global
 
-**Status:** ✅ Fixed. Added global `NSEvent` key monitoring in `HotkeyManager` for `⇧⌘E` (Meeting Studio), `⇧⌘D` (Dictation Toggle), `⇧⌘C` (Copy Last Dictation), and `⇧⌘R` (Meeting Recording), wired to `AppCoordinator`.
+**Status:** ✅ Fixed (`56014ea`). Added global `NSEvent` key monitoring in `HotkeyManager` for `⇧⌘E` (Meeting Studio), `⇧⌘D` (Dictation Toggle), `⇧⌘C` (Copy Last Dictation), and `⇧⌘R` (Meeting Recording), wired to `AppCoordinator`.
 
-**Where:** `Sources/Echo/UI/MenuBarManager.swift:112-151`
+**Regression:** the same four shortcuts are still `NSMenuItem.keyEquivalent`s in `MenuBarManager` (`:140-180`). When Echo is frontmost, the local event monitor and the menu key equivalent both run, so toggles fire twice. See `INJ-05`.
 
-`⇧⌘E`, `⇧⌘D`, `⇧⌘C`, `⇧⌘R` are `NSMenuItem.keyEquivalent`s. In an `.accessory` app they only fire while Echo or its menu is focused. README lists them as global shortcuts.
+**Where:** `Sources/Echo/UI/MenuBarManager.swift:112-151` (original)
 
-**Fix:** register them with Carbon `RegisterEventHotKey` (or a global `NSEvent` keyDown monitor) and/or update the README to say "menu shortcuts".
+Originally, `⇧⌘E`, `⇧⌘D`, `⇧⌘C`, `⇧⌘R` were only `NSMenuItem.keyEquivalent`s. In an `.accessory` app they only fire while Echo or its menu is focused, although the README listed them as global shortcuts.
+
+**Fix (applied):** a global `NSEvent` key-down monitor now handles them system-wide. Remove the duplicate focused-app path per `INJ-05`.
 
 ### INJ-03 · Injection order and clipboard behaviour
 
-**Status:** ✅ Fixed. Prioritized synthetic `Cmd+V` paste ahead of typing in the default cascade for atomic, fast injection (`AX -> Cmd+V -> Type`). Added optional non-destructive clipboard restoration (`restorePreviousClipboard`). Removed AppleScript fallback completely.
+**Status:** 🟡 **Partially fixed** (`56014ea`). Synthetic `Cmd+V` paste now precedes direct typing in the default cascade (`AX -> Cmd+V -> Type`), and the AppleScript fallback is gone.
 
-**Where:** `Sources/Echo/Injection/TextInjector.swift:312-344`, `:198-247`
+**What remains:** `restorePreviousClipboard` defaults to `false` (`TextInjector.swift:168`), and `inject` unconditionally calls `clearContents()` and writes the transcript (`:325-327`) even when AX injection succeeds. So the default behavior still destroys the user's clipboard, and `ARCHITECTURE.md:107` still claims "the clipboard is never wiped". Either default restoration on and document the 60 ms paste race, or change the docs to say Echo owns the clipboard during injection.
 
-- Direct Unicode typing (up to 300 chars, ~1.5 ms/char) is tried **before** `Cmd+V`. It is slower, can interleave with the user's own typing, and has no rollback if it partially fails.
-- `clearContents()` destroys the user's clipboard, contradicting README/CHANGELOG claims of non-destructive retention.
-- `prepareText` capitalizes before checking `useDirectTyping`; the "direct typing" path still types a 300-char string even when paste would be instant.
+**Where:** `Sources/Echo/Injection/TextInjector.swift:318-392` (current)
+
+- Originally, direct Unicode typing (up to 300 chars, ~1.5 ms/char) was tried **before** `Cmd+V`. That order is now inverted; typing remains the last fallback.
+- `clearContents()` still destroys the user's clipboard by default, contradicting the "Permanent Pasteboard Save" wording and `ARCHITECTURE.md:107`.
+- `prepareText` still capitalizes before checking `useDirectTyping`; the typing fallback still types the prepared string when paste would be instant.
 
 **Fix:** cascade AX insert → paste → typing; snapshot and restore the previous pasteboard after a successful paste (or explicitly document that Echo owns the clipboard); add a preference for injection order.
 
@@ -306,9 +343,28 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 **Fix:** request microphone access explicitly (`AVCaptureDevice.requestAccess(for: .audio)`), surface a state/banner for denied permission, remove or render `statusMessage`, and observe AX trust changes (notification/`Timer`/on-activate refresh).
 
+### INJ-05 · Global shortcuts fire twice when Echo is focused
+
+**Status:** ✅ Fixed (2026-11-19). The `⇧⌘E/D/C/R` handling moved out of `handleKeyDown` into `handleGlobalShortcut`, which only the global monitor calls. The local monitor still handles Esc/Control chords; while Echo is frontmost the menu key equivalents own the four chords, and while it is in the background the global monitor owns them. Regression test: `focusedAppShortcutsAreLeftToTheMenu`.
+
+**Where:** `Sources/Echo/Injection/HotkeyManager.swift:52-58`, `:173-194`; `Sources/Echo/UI/MenuBarManager.swift:140-180`
+
+The global `NSEvent` key monitor handles `⇧⌘E/D/C/R`, but the same chords remain `NSMenuItem.keyEquivalent`s. Local event monitors run before AppKit dispatches the event, so while the Meeting Studio (Echo) is frontmost both paths fire:
+
+- `⇧⌘D` → `onToggleDictation` runs, then the menu item runs again: dictation starts and is immediately finished.
+- `⇧⌘R` → meeting recording starts then stops.
+- `⇧⌘E` → the studio is shown twice (mostly harmless).
+- `⇧⌘C` → copies the last transcript twice (harmless).
+
+The added test only calls `handleKeyDown` directly (`HotkeyManagerTests.swift:170-195`), so it cannot see the duplicate AppKit dispatch. A minimal AppKit harness (local `.keyDown` monitor + a `.command/.shift` menu key equivalent + a synthesized event) produced `monitor=1 menu=1`, confirming both paths run.
+
+**Fix:** choose one owner per shortcut. Either remove the four local-monitor branches when `NSApp.isActive` (let the menu equivalents handle the focused case and the global monitor handle other apps), or drop the key equivalents and show the chord in the menu title. Add a note that global shortcuts require Accessibility permission, and cover the real dispatch path with a UI-level/manual check.
+
 ### UX-01 · Hardcoded "AI" notes
 
-**Status:** ✅ Fixed. Created `MeetingNotesExtractor` with linguistic sentence analysis to extract real decisions and action items dynamically from transcript utterances in real time. Replaced hardcoded strings with live dynamic cards, empty state guidance, and interactive user item management.
+**Status:** ✅ Fixed (`4b824d7`). Created `MeetingNotesExtractor` with sentence analysis to derive decisions and action items from transcript utterances. Replaced hardcoded strings with live cards, empty-state guidance, and interactive item management.
+
+**Caveat:** the extractor is a trigger-word heuristic, not an LLM, and its matching is currently too broad. See `UX-06`.
 
 **Where:** `Sources/Echo/Engine/MeetingNotesExtractor.swift`, `Sources/Echo/UI/MeetingStudio/MeetingStudioView.swift`
 
@@ -328,17 +384,19 @@ Observing `.control` in `.flagsChanged` means **every** `Ctrl+C`, `Ctrl+Space`, 
 
 ### UX-03 · HUD sizing and screen selection
 
-**Status:** ✅ Fixed. Anchored Floating Pill dynamically to display containing the mouse pointer (`NSMouseInRect(mouseLoc, screen.frame)`), falling back to `NSScreen.main`. Expanded base width to house discard button and status hints comfortably.
+**Status:** 🟡 **Partially fixed** (`441dc6d`). The pill now anchors to the display containing the mouse pointer (`FloatingPillPanel.swift:137-144`) instead of `NSScreen.main`, with `NSScreen.main` as fallback. This resolves the multi-monitor half of the finding.
+
+**What remains:** width is still derived from character count (`:116-131`, `livePartial.count × 7.0`, `preview.count × 6.5`), merely quantized into 40 pt / 30 pt buckets. Wide glyphs, emoji, and CJK still mis-size, and the hard 640/560 caps can truncate.
 
 **Where:** `Sources/Echo/UI/FloatingPillPanel.swift`
 
-Width is estimated as `characterCount × 7.5` (`:102`, `:108`, `:111`), which breaks for wide glyphs, emoji, and CJK. `NSScreen.main` (`:117`) is unreliable for a non-key panel on multi-monitor setups.
-
-**Fix:** measure with `NSAttributedString.size()` or let `NSHostingView.fittingSize` drive the window; anchor to the screen containing the mouse or the frontmost window.
+**Fix:** measure with `NSAttributedString.size()` or let `NSHostingView.fittingSize` drive the window width; keep the existing screen anchoring.
 
 ### UX-04 · No graceful shutdown / crash cleanup
 
-**Status:** ✅ Fixed. Created `EchoAppDelegate.applicationWillTerminate` and `AppCoordinator.shutdownGracefully()` to cancel active dictations, record `endTime` on open sessions, flush SQLite WAL checkpoints, stop all audio engines, and sweep temporary audio files.
+**Status:** ✅ Fixed (`56014ea`). Created `EchoAppDelegate.applicationWillTerminate` and `AppCoordinator.shutdownGracefully()` to cancel active dictations, record `endTime` on open sessions, flush SQLite WAL checkpoints, stop all audio engines, and sweep temporary audio files. Synchronous cleanup (dictation cancel, mic stop, session write, WAL, sweep) runs before the app exits.
+
+**Residual:** the meeting teardown is fired into an un-awaited `Task` (`AppCoordinator.swift:508-513`), so system-audio `stopCapture()` may not finish before `exit`. The temp sweep also runs immediately while in-flight transcriptions may still be reading their temp WAVs; `shutdownGracefully` does not await `TranscriptionService` drain. Low risk at termination, but do not reuse this function as a general "stop meeting" path.
 
 **Where:** `Sources/Echo/main.swift`, `Sources/Echo/AppCoordinator.swift`
 
@@ -358,13 +416,33 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 ### UX-05 · Export scope is misleading
 
-**Status:** ✅ Fixed. Renamed menu item to "Copy Notes as Markdown", reports errors via dialog, saves to user-configured `EchoSettings.exportDirectory`, and copies formatted Markdown directly to clipboard.
+**Status:** 🟡 **Partially fixed** (`56014ea`). The menu item is now "Copy Notes as Markdown", failures surface an `NSAlert`, the export directory is configurable (`EchoSettings.exportDirectory`, 0700), and the Markdown is copied to the clipboard.
 
-**Where:** `Sources/Echo/AppCoordinator.swift:333-346`, `Sources/Echo/UI/MenuBarManager.swift:156-162`
+**What remains:**
+- Scope is still `meetingCoordinator.activeSession` only; there is no session picker/history (`AppCoordinator.swift:465-484`).
+- When `activeSession` is `nil`, it fabricates an empty session and writes an empty Markdown file.
+- The label says "Copy" but the action also writes a file. Pick one behavior or label both.
 
-"Export All Notes to Obsidian (.md)" exports only `activeSession` (and an empty session if none), to a fixed folder. Failure is ignored.
+**Where:** `Sources/Echo/AppCoordinator.swift:465-498`, `Sources/Echo/UI/MenuBarManager.swift:184-191`
 
-**Fix:** rename to "Export Current Session", add a session picker/history, report success/failure, and remember the last export location.
+**Fix:** rename to "Export Current Session…", add a session picker, and guard `activeSession == nil` before writing.
+
+### UX-06 · Notes extraction over-matches
+
+**Status:** 🆕 Open (introduced by `4b824d7`).
+
+**Where:** `Sources/Echo/Engine/MeetingNotesExtractor.swift:16-72`, `:86-102`, `:121-137`; consumed from `MeetingStudioView.swift:99-107`
+
+Triggers are matched with `String.range(of:)` and no word boundary, and the shortest trigger wins:
+
+- `"approved"` matches inside `"unapproved"`; `"agreed"` inside `"disagreed"`.
+- `"approved"` / `"we will"` are so broad that almost any sentence becomes a "decision" or "action item". Example: "The design was approved by legal" yields a decision of "By legal." (or the whole sentence when the tail is short).
+- Matching stops at the first trigger, so `"we decided to approve X"` produces `"Approve X."` rather than preserving/removing the decision phrase intentionally.
+- There is no cap, so a long meeting fills the cards with low-confidence items.
+
+This is an acceptable v1 heuristic, but it should be labelled as such and hardened before it is presented as meeting intelligence.
+
+**Fix:** use word-boundary matching (`NSRegularExpression` or tokenization), prefer longest triggers, require a minimum tail length/predicate, and cap the list (or add confidence/undo). Add negative tests (`"unapproved"`, `"disagreed"`).
 
 ---
 
@@ -372,23 +450,25 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 ### SEC-02 · AppleScript fallback vs. Automation permission
 
-**Status:** ✅ Fixed. Removed AppleScript fallback completely. AX direct injection + universal synthetic `Cmd+V` (with `.maskCommand` isolation) handles 100% of apps without requiring AppleEvents / Automation permissions.
+**Status:** ✅ Fixed (`56014ea`). Removed the AppleScript fallback completely. AX direct injection + universal synthetic `Cmd+V` (with `.maskCommand` isolation) handles the injection path without requiring AppleEvents / Automation consent.
 
-**Where:** `Sources/Echo/Injection/TextInjector.swift:300-308`; `Echo.app/Contents/Info.plist`
+**Cleanup (done 2026-11-19):** removed the now-unused `NSAppleEventsUsageDescription` from `Info.plist` and corrected the 1.3.0 changelog entry.
 
-`NSAppleScript` ("System Events keystroke v") requires Automation consent. The bundle has no `NSAppleEventsUsageDescription`, so the fallback can produce the exact "Echo would like to control System Events" prompt loop the changelog says was fixed.
+**Where:** `Sources/Echo/Injection/TextInjector.swift` (fallback removed); `Info.plist`
 
-**Fix:** remove the AppleScript fallback (AX + `CGEvent` is sufficient), or gate it behind an explicit opt-in and add `NSAppleEventsUsageDescription` to the plist. Prefer not to depend on Automation for core dictation.
+`NSAppleScript` ("System Events keystroke v") requires Automation consent. At the time of the original review the bundle had no `NSAppleEventsUsageDescription`, so the fallback could produce the exact "Echo would like to control System Events" prompt loop the changelog said was fixed.
+
+**Fix (applied):** the AppleScript fallback was removed. AX + `CGEvent` is sufficient, and Echo no longer depends on Automation for core dictation. Remove the now-unused plist key per `BUILD-05`.
 
 ### BUILD-01 · Bundle assembly is not reproducible
 
-**Status:** ✅ Fixed. Created `Support/Info.plist` and `assemble_app.sh` script providing automated reproducible release bundling, signing, and verification.
+**Status:** ✅ Fixed (`5ca20b2`). `Info.plist` is checked in at the repo root (not `Support/`), and `assemble_app.sh` builds release, stages the bundle, signs ad-hoc, verifies, and runs the self-test. `CFBundleShortVersionString`/`CFBundleVersion` are both 1.3.1.
 
-**Where:** `Package.swift`, `Echo.app/Contents/Info.plist` (ignored), README "Compiling from Source"
+**Residual:** the script still calls `codesign --deep` (`BUILD-02`), and the `--test` step exits 0 on the unconditional `PASSED` banner rather than asserting. Version is still duplicated between `Info.plist` and `CHANGELOG.md`; consider one source of truth (a `VERSION` file or `MARKETING_VERSION` stamping).
 
-`Info.plist` exists only inside the ignored `.app`; version, usage strings, `LSUIElement`, and icon mapping are not in the repo. A fresh clone cannot rebuild the shipping bundle with the README commands, and version numbers live in several places.
+**Where:** `Package.swift`, `Info.plist`, `assemble_app.sh`, README "Compiling from Source"
 
-**Fix:** check in `Support/Info.plist` (with `$(MARKETING_VERSION)`-style values or a script that stamps it), add `scripts/build_app.sh` that compiles, assembles, signs, and zips, and keep one source of truth for the version.
+**Fix (done):** check in the plist, add an assembly script, and keep one source of truth for the version.
 
 ### BUILD-02 · Signing and distribution
 
@@ -417,29 +497,48 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 **Fix:** benchmark `metal`/`mlx` vs `cpu`, default to the fastest reliable path, and expose it as a setting.
 
+### BUILD-05 · Stale AppleEvents declaration and changelog contradiction
+
+**Status:** ✅ Fixed (2026-11-19). `NSAppleEventsUsageDescription` was removed from the tracked `Info.plist` (`plutil -lint` clean). The 1.3.0 entry now describes the declaration as superseded, and the new `[Unreleased]` section records the removal.
+
+**Where:** `Info.plist`; `CHANGELOG.md` (`Unreleased`, `1.3.0`); `assemble_app.sh`
+
+**Note:** the ignored `Echo.app/Contents/Info.plist` still contains the old key until `assemble_app.sh` is run again; always rebuild the bundle from the checked-in plist.
+
+### DATA-03 · Empty session row on every launch
+
+**Status:** 🆕 Open.
+
+**Where:** `Sources/Echo/Engine/MeetingCoordinator.swift:67-77`
+
+When the most recent session is closed, initialization creates a fresh `"Echo Speech Stream"` session and immediately persists it. Nothing is recorded into it unless the user dictates, so every launch after a completed meeting leaves an empty session row (and the test suite encodes this behavior). Over time the session list fills with empty streams, and there is no cleanup (`deleteSession` is never called by the app).
+
+**Fix:** create the transient stream lazily on the first utterance/partial rather than in `init`, or reuse a single per-day stream; add retention (e.g. delete empty or older-than-N-days sessions) before shipping a history browser.
+
 ### DOC-01 · Documentation drift
 
-**Status:** ✅ Fixed. Synchronized `README.md`, `ARCHITECTURE.md`, `ROADMAP.md`, and `CHANGELOG.md` to reflect `⌃ Control` push-to-talk, `.statusBar` HUD level, 3-tier cascade, and version 1.3.1 state.
+**Status:** ✅ Fixed (2026-11-19). The documentation was re-synchronized with the code:
 
-| Document | Says | Code |
-| :--- | :--- | :--- |
-| `README.md:42,85,100` | Hold `Right ⌥` | `⌃ Control` |
-| `README.md:85-90` | "Global" `⇧⌘…` shortcuts | Menu-only key equivalents |
-| `README.md:62` | "3-tier injection" | 4 paths (AX, typing, Cmd+V, AppleScript) |
-| `ARCHITECTURE.md:175` | HUD level `.floating` | `.statusBar` (`FloatingPillPanel.swift:19`) |
-| `ROADMAP.md:10,38` | v1.1 is "CURRENT", v1.2 "PLANNED" | `CHANGELOG.md` is at 1.2.0 |
-| `CHANGELOG.md:14` | Double-tap window 380 ms | 350 ms hold / 260 ms double-tap |
+- `ARCHITECTURE.md` — injection is now described as AX → paste → typing with the real 25 ms settle/Control behavior; the clipboard paragraph no longer claims it is never wiped; the engine section says CPU by default with `ECHO_FERMION_DEVICE` override.
+- `README.md` — clipboard, Markdown export, CPU default, and the `⇧⌘` Accessibility caveat now match the implementation and menu labels.
+- `ROADMAP.md` — removed the retired brass/Obsidian theme claim, the stale 30 ms/Option settling detail, and the old `Right ⌥` remap reference.
+- `AGENTS.md` — test count updated to 96 tests in 13 suites.
+- `CHANGELOG.md` — added `[Unreleased]` for the `INJ-05`, `CORE-02`, and `BUILD-05` fixes and marked the 1.3.0 Automation entry as superseded.
 
-**Fix:** treat docs as code — update them in the same commit, and add a short "what changed" checklist to the PR template.
+**Guardrail:** keep the docs in the same commit as behavior changes. The remaining `BUILD-04` item is now a product decision (CPU vs. Metal), not a documentation contradiction.
 
 ### REPO-01 · Hygiene and automation
 
-- ~~No CI (build + `swift test` + release compile).~~ Added in `78dbd4a` (`.github/workflows/ci.yml`).
-- No `swift-format`/`swiftlint` config; formatting is inconsistent (trailing spaces on blank lines, mixed import order).
+**Status:** Open (CI portion fixed).
+
+- ~~No CI (build + `swift test` + release compile).~~ Added in `78dbd4a` (`.github/workflows/ci.yml`); it runs debug build, `swift test`, and release build on macOS 15.
+- No `swift-format`/`swiftlint` config; formatting is inconsistent (trailing spaces on blank lines, mixed import order, `setupMenuBar() {        statusItem` on one line).
 - `.DS_Store` present at the root (ignored, but noise).
-- Icon/mockup scripts reference `~/.gemini/antigravity/...` absolute paths and are tracked; move them to `scripts/design/` with parameterised paths or remove.
+- The `render_*.swift` / `inspect_*.swift` design scripts are still tracked and reference machine-specific absolute paths; move them to `scripts/design/` with parameterised paths or remove them.
 - ~4 MB of simulator binaries (`echo-spike*`, `render_*`, `inspect_*`) sit in the working tree (ignored); consider deleting them and relying on git history.
+- The root harnesses and the `--test` branch still exist and still print "PASSED (100% Operational)" without assertions (`EchoApp.swift:30-62`). Keep them as a smoke test if useful, but label them clearly and make failures non-zero.
 - Consider a `Makefile`/`justfile` with `build`, `test`, `bundle`, `release` targets so the README stops carrying copy-paste commands.
+- The release zips (`Echo-v1.2.0`, `Echo-v1.3.0`) are present in the tree (ignored) and consume ~4.5 MB; remove before archiving.
 
 ### REPO-02 · Pre-existing failing harness
 
@@ -451,22 +550,28 @@ Every partial and segment is written to `FileManager.default.temporaryDirectory`
 
 ## Suggested sequencing
 
-1. ~~**QLT-01 + REPO-01** — get `swift test` and CI green first.~~ Done; every later fix should now land with a test.
-2. **AUD-01 + ENG-01 + ENG-02** — replace the partial-decode loop with a bounded window and put transcription behind one cancellable, time-limited service. This is the biggest perceived-quality win.
-3. **CFG-01 + BUILD-01** — make the app runnable on a machine that is not this one.
-4. **AUD-02/AUD-03/AUD-04 via one `AudioHub`** — removes duplicate capture and fixes clipped onsets.
-5. **DATA-01/DATA-02** — split dictation from meetings, add migrations and a session history view.
-6. **CORE-01** — enable strict concurrency and fix what it finds (expect real races).
-7. **INJ-01…INJ-03 + UX-01…UX-03** — product polish, once the plumbing is trustworthy.
-8. **SEC-01/SEC-02, BUILD-02, DOC-01, REPO-01** — release readiness and cleanup.
+Done: QLT-01/REPO-01 (CI), AUD-01, ENG-01/ENG-02, AUD-02–AUD-06, CFG-01, BUILD-01, BUILD-05, DATA-01 (first pass), UX-02, UX-04, SEC-01, SEC-02, LEX-01, INJ-01/INJ-02/INJ-04/INJ-05, UX-01, CORE-02, CORE-03, DOC-01.
+
+Remaining, in order:
+
+1. **INJ-03** — decide the clipboard contract: default `restorePreviousClipboard` on, or state that Echo owns the clipboard during injection. The docs now describe the current behavior; the product decision remains.
+2. **DATA-02 + DATA-03** — move the live persistence path off `MainActor`, stop persisting empty sessions every launch, and add retention/history.
+3. **BUILD-04** — benchmark CPU vs. Metal/MLX on this machine and make the default deliberate. Docs already say CPU, so this is now a performance task.
+4. **CORE-01** — enable strict concurrency in a branch; fix the remaining 22 `@unchecked Sendable` sites it exposes (start with `HotkeyManager`).
+5. **UX-03, UX-05, UX-06** — intrinsic HUD width, export scope/picker, and word-boundary notes extraction.
+6. **BUILD-02 + REPO-01** — inner-to-outer signing/notarization, formatter config, script/binaries cleanup, Makefile.
 
 ---
 
 ## Verification performed for this review
 
-- `swift build` and `swift build -c release` — clean.
-- `swift test` — 63 tests in 9 suites passing (audio store, converter, VAD, SQLite, word memory, formatting/injection, export, coordination, settings).
-- Legacy harnesses: `test_database.swift` 5/5, `test_injection.swift` 4/4.
-- Process-runner harness (throwaway): 1.17 MB of stdout drained without deadlock, 1 s timeout fired at 1.07 s, cancellation completed in 0.27 s.
+Re-audited `dd92480`…`bce471d` (1.3.0/1.3.1) against the source on 2026-11-19.
 
-_This document reflects `78dbd4a` (P0 all fixed). Strike through or delete items as they land, and keep the IDs stable so commit messages can reference them._
+- `swift build` — clean.
+- `swift build -c release` — clean.
+- `swift test` — **96 tests in 13 suites passing** (audio store, converter, VAD, AudioHub, transcription queue, SQLite, word memory, formatting/injection, export, coordination, notes extraction, hotkeys, settings). The new hotkey regression test covers the focused-app path.
+- Static checks: `git diff --stat 78dbd4a..HEAD` (37 source/test files, +4,260/−921), grep for remaining `objectWillChange` (1), `@unchecked Sendable` (22), unused async DB wrappers (production: 0 call sites), and stale plist keys.
+- Duplicate-shortcut dispatch (`INJ-05`) confirmed with a throwaway AppKit harness: one local `.keyDown` monitor plus one `⇧⌘` menu key equivalent produced `monitor=1 menu=1` for a synthesized event.
+- Not exercised (environment-limited): live microphone/system-audio capture and TCC prompts, a real `fermion` binary, and multi-monitor HUD placement. These need a manual pass with the app bundle.
+
+_This document reflects `bce471d` (v1.3.1). Mark items ✅ when fully fixed, 🟡 when partially fixed, and keep the IDs stable so commit messages can reference them._

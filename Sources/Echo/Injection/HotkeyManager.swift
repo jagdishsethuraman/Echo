@@ -48,8 +48,13 @@ public final class HotkeyManager: @unchecked Sendable {
             return event
         }
         
-        // KeyDown monitor for Escape (cancel) and chorded shortcuts (e.g. Ctrl+C, Ctrl+Space)
+        // KeyDown monitors for Escape (cancel) and chorded shortcuts (e.g. Ctrl+C,
+        // Ctrl+Space). The four ⇧⌘ chords are handled only by the global monitor:
+        // when Echo is frontmost, AppKit dispatches them to the menu key
+        // equivalents in `MenuBarManager`. Handling them locally as well made
+        // every toggle fire twice (INJ-05).
         globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            self?.handleGlobalShortcut(event)
             self?.handleKeyDown(event)
         }
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
@@ -159,6 +164,27 @@ public final class HotkeyManager: @unchecked Sendable {
         }
     }
     
+    /// Handle the system-wide ⇧⌘ shortcuts. Called from the global monitor only;
+    /// while Echo is frontmost the menu key equivalents own these chords.
+    public func handleGlobalShortcut(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains([.command, .shift]) else { return }
+        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return }
+
+        switch key {
+        case "e":
+            onOpenMeetingStudio?()
+        case "d":
+            onToggleDictation?()
+        case "c":
+            onCopyLastDictation?()
+        case "r":
+            onToggleMeetingRecording?()
+        default:
+            break
+        }
+    }
+
     public func handleKeyDown(_ event: NSEvent) {
         let keyCode = event.keyCode
         
@@ -170,28 +196,9 @@ public final class HotkeyManager: @unchecked Sendable {
             return
         }
         
-        // Global Command+Shift shortcuts (⇧⌘E, ⇧⌘D, ⇧⌘C, ⇧⌘R)
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains([.command, .shift]) {
-            if let key = event.charactersIgnoringModifiers?.lowercased() {
-                switch key {
-                case "e":
-                    onOpenMeetingStudio?()
-                    return
-                case "d":
-                    onToggleDictation?()
-                    return
-                case "c":
-                    onCopyLastDictation?()
-                    return
-                case "r":
-                    onToggleMeetingRecording?()
-                    return
-                default:
-                    break
-                }
-            }
-        }
+        // Note: the ⇧⌘E/D/C/R chords are deliberately not handled here. The
+        // menu owns them while Echo is active and the global monitor owns them
+        // elsewhere; duplicating them here fired every action twice (INJ-05).
         
         // If Control is physically held down and any other key is pressed,
         // this is a chorded shortcut (e.g. Ctrl+C, Ctrl+V, Ctrl+Space, Ctrl+A).
@@ -262,8 +269,19 @@ public final class HotkeyManager: @unchecked Sendable {
         simulateKeyDown(keyCode: 53)
     }
 
+    /// Simulates the system-wide shortcut path (global monitor).
     public func simulateKeyShortcut(characters: String, modifiers: NSEvent.ModifierFlags) {
-        let event = NSEvent.keyEvent(
+        handleGlobalShortcut(makeShortcutEvent(characters: characters, modifiers: modifiers))
+    }
+
+    /// Simulates the focused-app path (local monitor). ⇧⌘ chords are expected
+    /// to be handled by the menu here, not by HotkeyManager.
+    public func simulateLocalKeyShortcut(characters: String, modifiers: NSEvent.ModifierFlags) {
+        handleKeyDown(makeShortcutEvent(characters: characters, modifiers: modifiers))
+    }
+
+    private func makeShortcutEvent(characters: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
+        return NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
             modifierFlags: modifiers,
@@ -275,6 +293,5 @@ public final class HotkeyManager: @unchecked Sendable {
             isARepeat: false,
             keyCode: 0
         ) ?? NSEvent()
-        handleKeyDown(event)
     }
 }

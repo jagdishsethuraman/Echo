@@ -21,15 +21,15 @@ This document outlines the strategic engineering roadmap, architectural mileston
 ## 🚀 Shipped: v1.0.0 — Production Core & Offline Engine
 
 - [x] **Unified Single-Binary Architecture:** Combined push-to-talk cursor dictation (Handy style) and dual-channel meeting intelligence (Meetily style) into a single Swift binary, saving 1.2 GB duplicate model RAM.
-- [x] **Offline Speech Engine (Phonon-2):** Embedded `fermionresearch/phonon-2` (158 MB INT6 Parakeet-TDT 0.6B) running locally via Apple Silicon Metal/MLX loopback at 37.7x real-time speed.
+- [x] **Offline Speech Engine (Phonon-2):** Embedded `fermionresearch/phonon-2` (158 MB INT6 Parakeet-TDT 0.6B) running locally through the `fermion` process at up to 37.7x real-time speed. Device defaults to CPU (`ECHO_FERMION_DEVICE`).
 - [x] **CoreAudio 16kHz Tap:** Native microphone tap with automatic hardware resampling to 16kHz 16-bit mono PCM.
 - [x] **ScreenCaptureKit System Loopback:** Zero-echo attendee audio loopback using macOS ScreenCaptureKit with `excludesCurrentProcessAudio = true` (no virtual audio drivers or bots needed).
 - [x] **Rolling Energy VAD:** Dual-detector voice activity detector segmenting multi-speaker speech upon 600ms natural silence boundaries.
 - [x] **Push-to-Talk & Live Streaming HUD:** Non-activating floating `NSPanel` (`canBecomeKey=false`) streaming recognized words live every 650ms with audio waveform meters and blinking cursor.
-- [x] **Universal Auto-Paste Pipeline:** 3-tier text injection: `AXUIElement` direct value replacement → synthetic `Cmd+V` (with 30ms hotkey release settle delay and `.maskCommand` isolation) → direct Unicode typing fallback.
+- [x] **Universal Auto-Paste Pipeline:** `AXUIElement` direct value replacement → synthetic `Cmd+V` (25ms settle + `.maskCommand` isolation) → direct Unicode typing fallback. Text is also left on the clipboard as a manual fallback.
 - [x] **Local SQLite Backend (`echo.sqlite`):** Native WAL-mode persistence using macOS `libsqlite3` archiving sessions, utterances, and quick dictations across app restarts.
 - [x] **Word Memory & Speech Lexicon Engine:** Whole-word boundary regex engine (`\b(pattern)\b`) correcting phonetically ambiguous STT outputs in real time across live streams and active cursor typing.
-- [x] **Swiss Atelier Bento Meeting Studio:** 62/38 Bento grid layout in obsidian (`#050507`) and warm brass (`#e5a93c`) with live VU meters and Markdown export.
+- [x] **Graphite Frost Bento Meeting Studio:** 62/38 Bento grid with neutral frosted graphite surfaces, a cool frost-blue accent, live VU meters, and Markdown export.
 - [x] **Adaptive Pill Menu Bar:** Menu bar status item adapting dynamically from minimal glyph `◉` to active recording timer `● MM:SS`.
 - [x] **Permanent TCC Code Signing:** Ad-hoc sealed bundle signed with `-r="designated => identifier \"com.ragavij.echo\""` preserving Accessibility permissions across builds.
 
@@ -44,7 +44,7 @@ This document outlines the strategic engineering roadmap, architectural mileston
     - *Action Items* with inferred assignees.
     - *Follow-ups & Next Steps*.
 - [ ] **Custom Hotkey Remapping:**
-  - Preferences pane to remap push-to-talk trigger from `Right ⌥` to `Fn / Globe`, `Right ⌘`, double-tap `Control`, or custom combinations.
+  - Preferences pane to remap the push-to-talk trigger from `Control` to `Fn / Globe`, `Right ⌘`, double-tap `Control`, or custom combinations.
   - Global push-to-talk toggle switch (Hold-to-talk vs Tap-to-toggle).
 - [ ] **Audio Sensitivity & VAD Tuning:**
   - User-configurable microphone gain and silence duration threshold (300ms–1200ms) for fast vs slow speakers.
