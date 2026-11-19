@@ -3,13 +3,22 @@ import SQLite3
 
 public final class DatabaseManager: @unchecked Sendable {
     public static let shared = DatabaseManager()
+
+    public struct StartupError: LocalizedError, Sendable {
+        public let path: String
+        public let message: String
+        public var errorDescription: String? { message }
+    }
+
+    /// The database is unavailable when opening, migration, or validation fails.
+    public private(set) var startupError: StartupError?
     
     private var db: OpaquePointer?
     private let lock = NSLock()
-    private let dbPath: String
+    private var dbPath: String
     private let dbQueue = DispatchQueue(label: "com.echo.database", qos: .utility)
     
-    /// Callback for surfacing SQLite failures to the UI. Invoked on the main
+    /// Callback for surfacing runtime SQLite failures to the UI. Invoked on the main
     /// queue; kept outside `lock` so a handler that reads the database cannot
     /// deadlock the caller.
     public typealias ErrorHandler = (String) -> Void
@@ -38,6 +47,7 @@ public final class DatabaseManager: @unchecked Sendable {
     /// Single place for surfacing SQLite failures: log once and notify the
     /// optional UI handler without touching any database state under `lock`.
     private func reportError(_ context: String) {
+        guard startupError == nil else { return }
         let message = String(cString: sqlite3_errmsg(db))
         print("Echo DatabaseManager: \(context): \(message)")
         if let handler = onError {
@@ -57,48 +67,44 @@ public final class DatabaseManager: @unchecked Sendable {
             self.dbPath = echoDir.appendingPathComponent("echo.sqlite").path
         }
         
-        openDatabase()
-        applyMigrations()
+        do {
+            try openDatabase(allowFallback: customPath == nil)
+            try configurePragmas()
+            try applyMigrations()
+        } catch {
+            let failure = (error as? StartupError) ?? StartupError(path: dbPath, message: error.localizedDescription)
+            startupError = failure
+            print("Echo DatabaseManager: \(failure.message) (\(failure.path))")
+            closeDatabase()
+        }
     }
     
     deinit {
         lock.lock()
         defer { lock.unlock() }
-        if let db = db {
-            sqlite3_close(db)
-        }
+        closeDatabase()
     }
     
     // MARK: - Lifecycle & Initialization
     
-    private func configurePragmas(on db: OpaquePointer?) {
-        guard let db else { return }
-        // WAL mode for high concurrency & performance
-        sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
-        sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
-        // 3-second busy timeout to prevent lock contention
-        sqlite3_busy_timeout(db, 3000)
-        sqlite3_exec(db, "PRAGMA busy_timeout = 3000;", nil, nil, nil)
-        // Enforce foreign key constraints
-        sqlite3_exec(db, "PRAGMA foreign_keys = ON;", nil, nil, nil)
+    private func configurePragmas() throws {
+        try executeStartupSQL("""
+            PRAGMA busy_timeout = 3000;
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA foreign_keys = ON;
+            """, context: "Could not configure the database")
     }
     
-    private func openDatabase() {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        if sqlite3_open(dbPath, &db) == SQLITE_OK {
-            configurePragmas(on: db)
-            return
-        }
-        
+    private func openDatabase(allowFallback: Bool) throws {
+        if sqlite3_open(dbPath, &db) == SQLITE_OK { return }
+
+        let openError = sqliteStartupError("Could not open the database")
+        closeDatabase()
+        guard allowFallback else { throw openError }
+
         // Sandbox-safe fallback to a per-user directory that does not depend on
         // where the source tree happens to live.
-        if let db = db {
-            sqlite3_close(db)
-            self.db = nil
-        }
-        
         let fallbackDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".echo", isDirectory: true)
         try? FileManager.default.createDirectory(
@@ -109,43 +115,49 @@ public final class DatabaseManager: @unchecked Sendable {
         let fallbackPath = fallbackDirectory.appendingPathComponent("echo.sqlite").path
         
         if sqlite3_open(fallbackPath, &db) == SQLITE_OK {
-            configurePragmas(on: db)
+            dbPath = fallbackPath
             print("Echo DatabaseManager: Initialized at fallback: \(fallbackPath)")
-        } else {
-            if let db = db {
-                sqlite3_close(db)
-                self.db = nil
-            }
-            let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("echo.sqlite").path
-            if sqlite3_open(tempPath, &db) == SQLITE_OK {
-                configurePragmas(on: db)
-                print("Echo DatabaseManager: Initialized at temp fallback: \(tempPath)")
-            } else {
-                print("Echo DatabaseManager: Failed to open SQLite DB at \(dbPath) or \(fallbackPath)")
-            }
+            return
+        }
+        closeDatabase()
+
+        let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("echo.sqlite").path
+        guard sqlite3_open(tempPath, &db) == SQLITE_OK else { throw openError }
+        dbPath = tempPath
+        print("Echo DatabaseManager: Initialized at temp fallback: \(tempPath)")
+    }
+
+    private func closeDatabase() {
+        if let db {
+            sqlite3_close(db)
+            self.db = nil
         }
     }
     
     public func userVersion() -> Int32 {
         lock.lock()
         defer { lock.unlock() }
-        return userVersionLocked()
+        return (try? readUserVersion()) ?? 0
     }
     
-    private func userVersionLocked() -> Int32 {
+    private func readUserVersion() throws -> Int32 {
         var stmt: OpaquePointer?
-        var version: Int32 = 0
-        if sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK {
-            if sqlite3_step(stmt) == SQLITE_ROW {
-                version = sqlite3_column_int(stmt, 0)
-            }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK,
+              sqlite3_step(stmt) == SQLITE_ROW else {
+            throw sqliteStartupError("Could not read the database schema version")
         }
-        sqlite3_finalize(stmt)
-        return version
+        return sqlite3_column_int(stmt, 0)
     }
-    
-    private func setUserVersionLocked(_ version: Int32) {
-        sqlite3_exec(db, "PRAGMA user_version = \(version);", nil, nil, nil)
+
+    private func sqliteStartupError(_ context: String) -> StartupError {
+        StartupError(path: dbPath, message: "\(context): \(String(cString: sqlite3_errmsg(db)))")
+    }
+
+    private func executeStartupSQL(_ sql: String, context: String) throws {
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            throw sqliteStartupError(context)
+        }
     }
     
     /// SQLite's query plan for `sql`; used by migration tests to prove an index
@@ -170,11 +182,15 @@ public final class DatabaseManager: @unchecked Sendable {
         return lines.joined(separator: "\n")
     }
 
-    private func applyMigrations() {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        let version = userVersionLocked()
+    private static let validateCoreSchemaSQL = """
+        SELECT id, title, start_time, end_time, summary_markdown, created_at FROM sessions LIMIT 0;
+        SELECT id, session_id, speaker, timestamp, text, duration_seconds, is_dictation FROM utterances LIMIT 0;
+        SELECT id, raw_pattern, preferred_replacement, frequency, case_sensitive, created_at, updated_at
+            FROM dictionary LIMIT 0;
+        """
+
+    private func applyMigrations() throws {
+        let version = try readUserVersion()
         if version < 1 {
             let schemaSQL = """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -209,23 +225,37 @@ public final class DatabaseManager: @unchecked Sendable {
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
+
+            \(Self.validateCoreSchemaSQL)
             """
-            
-            if sqlite3_exec(db, schemaSQL, nil, nil, nil) != SQLITE_OK {
-                reportError("Table creation/migration error (v1)")
-            } else {
-                setUserVersionLocked(1)
-            }
+
+            try migrate(to: 1, sql: schemaSQL)
         }
+
+        // An earlier release could mark a partially created database as v2.
+        try executeStartupSQL(Self.validateCoreSchemaSQL, context: "Could not validate the database schema")
 
         // v2: the history/retention queries order sessions by start time.
         if version < 2 {
-            let sql = "CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC);"
-            if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-                reportError("Migration error (v2)")
-            } else {
-                setUserVersionLocked(2)
+            try migrate(to: 2, sql: "CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC);")
+        }
+    }
+
+    private func migrate(to version: Int32, sql: String) throws {
+        let context = "Could not migrate the database to v\(version)"
+        try executeStartupSQL("BEGIN IMMEDIATE;", context: context)
+        do {
+            // Read the version under the write lock in case another process upgraded it.
+            if try readUserVersion() < version {
+                try executeStartupSQL(sql, context: context)
+                try executeStartupSQL("PRAGMA user_version = \(version);", context: context)
             }
+            try executeStartupSQL("COMMIT;", context: context)
+        } catch {
+            if sqlite3_get_autocommit(db) == 0 {
+                sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+            }
+            throw error
         }
     }
     
@@ -356,6 +386,7 @@ public final class DatabaseManager: @unchecked Sendable {
     public func checkpointWAL() {
         lock.lock()
         defer { lock.unlock() }
+        guard let db else { return }
         var logSize: Int32 = 0
         var framesCheckpointed: Int32 = 0
         let rc = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_PASSIVE, &logSize, &framesCheckpointed)
