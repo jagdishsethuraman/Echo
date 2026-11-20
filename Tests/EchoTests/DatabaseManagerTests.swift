@@ -557,4 +557,17 @@ struct DatabaseManagerTests {
         #expect(itemsB.first?.text == "Task for Session B")
         #expect(itemsB.first?.isDone == false)
     }
+
+    @Test func metadataKeyValuesRoundTrip() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        #expect(db.getMetadata(key: "test_key") == nil)
+        db.setMetadata(key: "test_key", value: "hello_world")
+        #expect(db.getMetadata(key: "test_key") == "hello_world")
+
+        // Overwrite
+        db.setMetadata(key: "test_key", value: "updated_val")
+        #expect(db.getMetadata(key: "test_key") == "updated_val")
+    }
 }

@@ -123,4 +123,38 @@ struct AudioHubTests {
         
         #expect(recorder.snapshot == [0.75])
     }
+
+    @Test func failedMicrophoneStartLeavesZeroRetainCount() {
+        let hub = AudioHub()
+        do {
+            try hub.retainMicrophone()
+            #expect(hub.currentMicRetainCount == 1)
+            hub.releaseMicrophone()
+            #expect(hub.currentMicRetainCount == 0)
+        } catch {
+            // Hardware start failure must leave retain count at zero
+            #expect(hub.currentMicRetainCount == 0)
+        }
+    }
+
+    @Test func audioTempDirectoryProtectsCurrentProcess() {
+        let currentPid = ProcessInfo.processInfo.processIdentifier
+        #expect(AudioTempDirectory.isProcessAlive(pid: currentPid) == true)
+        #expect(AudioTempDirectory.isProcessAlive(pid: -999) == false)
+
+        let url = try? AudioTempDirectory.writeTempWAV(data: Data([0, 1, 2]), prefix: "test_isolated")
+        #expect(url != nil)
+        if let url {
+            #expect(FileManager.default.fileExists(atPath: url.path))
+            #expect(url.path.contains("pid_\(currentPid)"))
+
+            // Sweep must NOT delete active process files
+            AudioTempDirectory.sweepOrphanedAudioFiles()
+            #expect(FileManager.default.fileExists(atPath: url.path))
+
+            // Cleanup current process removes it
+            AudioTempDirectory.cleanupCurrentProcess()
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+        }
+    }
 }

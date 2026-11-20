@@ -49,11 +49,18 @@ public final class WordMemoryEngine: @unchecked Sendable {
     }
     
     private func seedDefaultsIfNeeded() {
+        if database.getMetadata(key: "vocabulary_seeded") == "true" {
+            return
+        }
+
         lock.lock()
         let count = entries.count
         lock.unlock()
         
-        guard count == 0 else { return }
+        guard count == 0 else {
+            database.setMetadata(key: "vocabulary_seeded", value: "true")
+            return
+        }
         
         let defaults: [(raw: String, pref: String)] = [
             ("phone on", "Phonon"),
@@ -72,6 +79,7 @@ public final class WordMemoryEngine: @unchecked Sendable {
             database.saveOrIncrementDictionaryWord(raw: item.raw, preferred: item.pref)
         }
         
+        database.setMetadata(key: "vocabulary_seeded", value: "true")
         reloadFromDatabase()
     }
     

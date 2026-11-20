@@ -10,7 +10,8 @@ public final class VoiceActivityDetector: @unchecked Sendable {
     
     private var speechBuffer = Data()
     private var preRollBuffer = Data()
-    private var silenceFramesCount: Int = 0
+    private var voicedSamples: Int = 0
+    private var silentSamples: Int = 0
     private var isSpeaking = false
     private var speechStartTime: Date?
     private let lock = NSLock()
@@ -40,6 +41,7 @@ public final class VoiceActivityDetector: @unchecked Sendable {
     /// Process incoming 16kHz Int16 mono PCM chunk
     public func processChunk(pcmData: Data, rmsEnergy: Float) {
         var completed: (Data, Double, Date)?
+        let chunkSamples = pcmData.count / 2
         
         lock.lock()
         if rmsEnergy >= energyThreshold {
@@ -53,7 +55,8 @@ public final class VoiceActivityDetector: @unchecked Sendable {
                 preRollBuffer.removeAll(keepingCapacity: true)
             }
             speechBuffer.append(pcmData)
-            silenceFramesCount = 0
+            voicedSamples += chunkSamples
+            silentSamples = 0
             
             // Check if buffer exceeded max duration
             let currentDuration = Double(speechBuffer.count / 2) / Double(sampleRate)
@@ -64,11 +67,10 @@ public final class VoiceActivityDetector: @unchecked Sendable {
             // Trailing silence stays part of the segment until the threshold is
             // reached, which keeps the natural pause at the end of a sentence.
             speechBuffer.append(pcmData)
-            let chunkDuration = Double(pcmData.count / 2) / Double(sampleRate)
-            let requiredSilenceFrames = Int(silenceThresholdSeconds / max(chunkDuration, 0.01))
-            silenceFramesCount += 1
+            silentSamples += chunkSamples
             
-            if silenceFramesCount >= requiredSilenceFrames {
+            let silenceDuration = Double(silentSamples) / Double(sampleRate)
+            if silenceDuration >= (silenceThresholdSeconds - 0.02) {
                 completed = takeSegmentLocked()
             }
         } else {
@@ -109,7 +111,8 @@ public final class VoiceActivityDetector: @unchecked Sendable {
         lock.lock()
         speechBuffer.removeAll(keepingCapacity: true)
         preRollBuffer.removeAll(keepingCapacity: true)
-        silenceFramesCount = 0
+        voicedSamples = 0
+        silentSamples = 0
         isSpeaking = false
         speechStartTime = nil
         lock.unlock()
@@ -119,21 +122,24 @@ public final class VoiceActivityDetector: @unchecked Sendable {
     private func takeSegmentLocked() -> (Data, Double, Date)? {
         guard !speechBuffer.isEmpty else {
             isSpeaking = false
-            silenceFramesCount = 0
+            voicedSamples = 0
+            silentSamples = 0
             speechStartTime = nil
             return nil
         }
         
-        let duration = Double(speechBuffer.count / 2) / Double(sampleRate)
+        let totalDuration = Double(speechBuffer.count / 2) / Double(sampleRate)
+        let voicedDuration = Double(voicedSamples) / Double(sampleRate)
         let completedData = speechBuffer
         let timestamp = speechStartTime ?? Date()
         speechBuffer.removeAll(keepingCapacity: true)
         isSpeaking = false
-        silenceFramesCount = 0
+        voicedSamples = 0
+        silentSamples = 0
         speechStartTime = nil
         
-        // Below minimum duration (noise pop) - discard.
-        guard duration >= minSpeechDurationSeconds else { return nil }
-        return (completedData, duration, timestamp)
+        // Below minimum voiced duration (noise pop) - discard.
+        guard voicedDuration >= minSpeechDurationSeconds else { return nil }
+        return (completedData, totalDuration, timestamp)
     }
 }

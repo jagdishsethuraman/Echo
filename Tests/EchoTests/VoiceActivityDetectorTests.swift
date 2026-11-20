@@ -279,4 +279,57 @@ struct VoiceActivityDetectorTests {
             #expect(ts <= Date())
         }
     }
+
+    @Test func unevenChunkSplitsProduceIdenticalSegmentTiming() async {
+        let vad = VoiceActivityDetector(
+            energyThreshold: 0.1,
+            silenceThresholdSeconds: 0.3,
+            minSpeechDurationSeconds: 0.2,
+            preRollSeconds: 0.0
+        )
+        let recorder = SegmentRecorder()
+        vad.onSpeechSegmentCompleted = { pcm, duration in
+            recorder.record(pcm, duration)
+        }
+
+        // 400ms of speech split into uneven chunks: 150ms + 250ms
+        vad.processChunk(pcmData: chunk(seconds: 0.15), rmsEnergy: 0.5)
+        vad.processChunk(pcmData: chunk(seconds: 0.25), rmsEnergy: 0.5)
+
+        // 300ms of silence split into uneven chunks: 50ms + 100ms + 150ms
+        vad.processChunk(pcmData: chunk(seconds: 0.05), rmsEnergy: 0.0)
+        vad.processChunk(pcmData: chunk(seconds: 0.10), rmsEnergy: 0.0)
+        vad.processChunk(pcmData: chunk(seconds: 0.15), rmsEnergy: 0.0)
+
+        #expect(await waitForSegments(recorder, count: 1))
+        let segment = recorder.snapshot.first
+        #expect(abs((segment?.duration ?? 0) - 0.70) < 0.001)
+    }
+
+    @Test func isolatedNoiseImpulseFollowedBySilenceIsDiscarded() async {
+        let vad = VoiceActivityDetector(
+            energyThreshold: 0.1,
+            silenceThresholdSeconds: 0.3,
+            minSpeechDurationSeconds: 0.4, // requires 400ms of voiced speech
+            preRollSeconds: 0.2
+        )
+        let recorder = SegmentRecorder()
+        vad.onSpeechSegmentCompleted = { pcm, duration in
+            recorder.record(pcm, duration)
+        }
+
+        // 200ms pre-roll silence
+        vad.processChunk(pcmData: chunk(seconds: 0.2), rmsEnergy: 0.0)
+
+        // 50ms click (below minSpeechDurationSeconds 0.4s)
+        vad.processChunk(pcmData: chunk(seconds: 0.05), rmsEnergy: 0.8)
+
+        // 400ms trailing silence
+        vad.processChunk(pcmData: chunk(seconds: 0.2), rmsEnergy: 0.0)
+        vad.processChunk(pcmData: chunk(seconds: 0.2), rmsEnergy: 0.0)
+
+        try? await Task.sleep(for: .milliseconds(100))
+        // Must be discarded because voiced duration was only 50ms!
+        #expect(recorder.count == 0)
+    }
 }

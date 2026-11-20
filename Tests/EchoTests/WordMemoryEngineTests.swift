@@ -117,4 +117,32 @@ struct WordMemoryEngineTests {
         #expect(engine.sanitize("the price is fixed") == "the $500 is fixed")
         #expect(engine.sanitize("go to winpath now") == "go to C:\\Users\\Echo now")
     }
+
+    @Test func deletingAllTermsAndReopeningDoesNotResurrectDefaults() {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("echo-memory-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { remove(directory) }
+
+        let dbPath = directory.appendingPathComponent("echo.sqlite").path
+        let db = DatabaseManager(customPath: dbPath)
+        let engine1 = WordMemoryEngine(database: db)
+
+        // Seeded initially
+        let initialEntries = engine1.allEntries()
+        #expect(!initialEntries.isEmpty)
+
+        // User deletes every entry
+        for entry in initialEntries {
+            engine1.delete(id: entry.id)
+        }
+        #expect(engine1.allEntries().isEmpty)
+
+        // Reopen database with new engine instance
+        let reopenedDb = DatabaseManager(customPath: dbPath)
+        let engine2 = WordMemoryEngine(database: reopenedDb)
+
+        // Must remain empty, NOT resurrected
+        #expect(engine2.allEntries().isEmpty)
+    }
 }

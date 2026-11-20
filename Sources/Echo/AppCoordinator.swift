@@ -688,6 +688,7 @@ public final class AppCoordinator: ObservableObject {
             dictationWork.notify(queue: .global()) { continuation.resume() }
         }
         DatabaseManager.shared.checkpointWAL()
+        AudioTempDirectory.cleanupCurrentProcess()
         AudioTempDirectory.sweepOrphanedAudioFiles()
     }
 

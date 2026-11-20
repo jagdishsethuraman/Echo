@@ -282,6 +282,17 @@ public final class DatabaseManager: @unchecked Sendable {
             """
             try migrate(to: 3, sql: actionItemsSQL)
         }
+
+        // v4: metadata key-value table for persistent system flags (e.g. initial vocabulary seed)
+        if version < 4 {
+            let metadataSQL = """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+            try migrate(to: 4, sql: metadataSQL)
+        }
     }
 
     private func migrate(to version: Int32, sql: String) throws {
@@ -558,6 +569,48 @@ public final class DatabaseManager: @unchecked Sendable {
             bindText(stmt, 1, id.uuidString)
             if sqlite3_step(stmt) != SQLITE_DONE {
                 reportError("deleteActionItem")
+            }
+        }
+    }
+
+    // MARK: - Metadata
+
+    public func getMetadata(key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return nil }
+
+        let sql = "SELECT value FROM metadata WHERE key = ? LIMIT 1;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, key)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                if let valCString = sqlite3_column_text(stmt, 0) {
+                    return String(cString: valCString)
+                }
+            }
+        }
+        return nil
+    }
+
+    public func setMetadata(key: String, value: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return }
+
+        let sql = """
+        INSERT INTO metadata (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+        """
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, key)
+            bindText(stmt, 2, value)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                reportError("setMetadata")
             }
         }
     }

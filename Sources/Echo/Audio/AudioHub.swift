@@ -36,8 +36,20 @@ public final class AudioHub: @unchecked Sendable {
     
     public private(set) var lastError: Error?
     
+    private let micHardwareLock = NSLock()
+    private let systemHardwareLock = NSLock()
+    private var pendingSystemStartTask: Task<Void, Error>?
+
     private var micRetainCount = 0
     private var systemRetainCount = 0
+
+    var currentMicRetainCount: Int {
+        micHardwareLock.withLock { micRetainCount }
+    }
+
+    var currentSystemRetainCount: Int {
+        systemHardwareLock.withLock { systemRetainCount }
+    }
     
     private var lastMicLevelPublish: TimeInterval = 0
     private var lastSystemLevelPublish: TimeInterval = 0
@@ -143,35 +155,67 @@ public final class AudioHub: @unchecked Sendable {
     // MARK: - Reference-counted capture
     
     /// Retain microphone capture. Starts the engine on the first retention.
+    /// Hardware transitions are strictly serialized so concurrent callers
+    /// share the result and a failed start never leaves a positive retain count.
     public func retainMicrophone() throws {
-        let shouldStart = bumpMicRetainCount()
-        guard shouldStart else { return }
-        
-        do {
-            try micEngine.startCapture()
-        } catch {
-            _ = dropMicRetainCount()
-            broadcastError(error)
-            throw error
+        micHardwareLock.lock()
+        defer { micHardwareLock.unlock() }
+
+        if micRetainCount == 0 {
+            do {
+                try micEngine.startCapture()
+                micRetainCount = 1
+            } catch {
+                broadcastError(error)
+                throw error
+            }
+        } else {
+            micRetainCount += 1
         }
     }
     
     /// Release microphone capture. Stops the engine when the last user leaves.
     public func releaseMicrophone() {
-        guard dropMicRetainCount() else { return }
-        micEngine.stopCapture()
+        micHardwareLock.lock()
+        defer { micHardwareLock.unlock() }
+
+        guard micRetainCount > 0 else { return }
+        micRetainCount -= 1
+        if micRetainCount == 0 {
+            micEngine.stopCapture()
+        }
     }
     
     /// Retain system-audio loopback. Starts ScreenCaptureKit on the first
     /// retention. System audio is optional, so callers may log and continue.
     public func retainSystemAudio() async throws {
-        let shouldStart = bumpSystemRetainCount()
-        guard shouldStart else { return }
-        
+        let task: Task<Void, Error> = systemHardwareLock.withLock {
+            if systemRetainCount > 0 {
+                systemRetainCount += 1
+                return Task { }
+            }
+            if let existing = pendingSystemStartTask {
+                return existing
+            }
+            let startTask = Task {
+                try await self.systemCapture.startCapture()
+            }
+            pendingSystemStartTask = startTask
+            return startTask
+        }
+
         do {
-            try await systemCapture.startCapture()
+            try await task.value
+            systemHardwareLock.withLock {
+                if systemRetainCount == 0 {
+                    systemRetainCount = 1
+                }
+                pendingSystemStartTask = nil
+            }
         } catch {
-            _ = dropSystemRetainCount()
+            systemHardwareLock.withLock {
+                pendingSystemStartTask = nil
+            }
             broadcastError(error)
             throw error
         }
@@ -180,17 +224,26 @@ public final class AudioHub: @unchecked Sendable {
     /// Release system-audio loopback. Stops the stream when the last user
     /// leaves.
     public func releaseSystemAudio() async {
-        guard dropSystemRetainCount() else { return }
-        try? await systemCapture.stopCapture()
+        let shouldStop: Bool = systemHardwareLock.withLock {
+            guard systemRetainCount > 0 else { return false }
+            systemRetainCount -= 1
+            return systemRetainCount == 0
+        }
+        if shouldStop {
+            try? await systemCapture.stopCapture()
+        }
     }
     
     /// Unconditional teardown of all audio capture engines on application shutdown
     public func stopAll() async {
-        lock.withLock {
+        micHardwareLock.withLock {
             micRetainCount = 0
-            systemRetainCount = 0
+            micEngine.stopCapture()
         }
-        micEngine.stopCapture()
+        systemHardwareLock.withLock {
+            systemRetainCount = 0
+            pendingSystemStartTask = nil
+        }
         try? await systemCapture.stopCapture()
     }
 
