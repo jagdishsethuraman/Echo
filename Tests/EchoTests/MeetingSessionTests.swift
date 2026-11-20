@@ -90,4 +90,43 @@ struct MeetingSessionTests {
         #expect(decoded.segments == session.segments)
         #expect(decoded.endTime == session.endTime)
     }
+
+    @Test func exportMarkdownIncludesDecisionsAndActionItemsWithCheckboxes() {
+        let actionItemDone = ActionItemState(text: "Finished task", isDone: true)
+        let actionItemOpen = ActionItemState(text: "Pending task", isDone: false)
+
+        let session = MeetingSession(
+            title: "Sprint Planning",
+            startTime: start,
+            actionItems: [actionItemDone, actionItemOpen]
+        )
+
+        let decisions = ["Use SQLite WAL mode", "Retain 8-character UUID slugs"]
+        let md = session.exportMarkdown(decisions: decisions)
+
+        #expect(md.contains("## Executive Summary & Action Items"))
+        #expect(md.contains("### Key Decisions"))
+        #expect(md.contains("- Use SQLite WAL mode"))
+        #expect(md.contains("- Retain 8-character UUID slugs"))
+        #expect(md.contains("### Action Items"))
+        #expect(md.contains("- [x] Finished task"))
+        #expect(md.contains("- [ ] Pending task"))
+    }
+
+    @Test func exportFilenamesContainSessionSlugPreventingSameSecondCollision() {
+        let sameSecond = Date(timeIntervalSince1970: 1_700_000_000)
+        let sessionA = MeetingSession(title: "Session A", startTime: sameSecond)
+        let sessionB = MeetingSession(title: "Session B", startTime: sameSecond)
+
+        let timestamp = ISO8601DateFormatter().string(from: sameSecond).replacingOccurrences(of: ":", with: "-")
+        let slugA = sessionA.id.uuidString.prefix(8).lowercased()
+        let slugB = sessionB.id.uuidString.prefix(8).lowercased()
+
+        let filenameA = "echo_meeting_\(timestamp)_\(slugA).md"
+        let filenameB = "echo_meeting_\(timestamp)_\(slugB).md"
+
+        #expect(filenameA != filenameB)
+        #expect(filenameA.contains(slugA))
+        #expect(filenameB.contains(slugB))
+    }
 }

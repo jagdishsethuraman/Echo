@@ -181,13 +181,15 @@ struct TranscriptionServiceTests {
         let t2 = service.submitReporting(pcmData: chunk) { _ in }
         #expect(service.currentQueuedBytes == 200)
 
-        var receivedError: TranscriptionService.TranscriptionError?
-        let t3 = service.submitReporting(pcmData: chunk) { result in
-            if case .failure(let err as TranscriptionService.TranscriptionError) = result {
-                receivedError = err
+        let receivedError: TranscriptionService.TranscriptionError? = await withCheckedContinuation { continuation in
+            _ = service.submitReporting(pcmData: chunk) { result in
+                if case .failure(let err as TranscriptionService.TranscriptionError) = result {
+                    continuation.resume(returning: err)
+                } else {
+                    continuation.resume(returning: nil)
+                }
             }
         }
-        _ = await t3.value
 
         #expect(receivedError == .queueOverloaded(bytesQueued: 200, maxBytes: 200))
 

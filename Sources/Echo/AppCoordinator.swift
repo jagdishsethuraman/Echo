@@ -607,24 +607,28 @@ public final class AppCoordinator: ObservableObject {
             alert.runModal()
             return
         }
-        _ = exportSessionMarkdown(session)
+        Task { @MainActor in
+            await exportSessionMarkdown(session)
+        }
     }
     
     @discardableResult
-    public func exportSession(id: UUID) -> URL? {
+    public func exportSession(id: UUID) async -> URL? {
         guard !isMeetingFinalizing || meetingCoordinator.activeSession?.id != id else { return nil }
-        guard let session = DatabaseManager.shared.fetchSession(id: id) else {
+        guard let session = await DatabaseManager.shared.fetchSessionAsync(id: id) else {
             statusMessage = "Session not found"
             return nil
         }
-        let segments = DatabaseManager.shared.fetchUtterances(sessionId: id)
+        let segments = await DatabaseManager.shared.fetchUtterancesAsync(sessionId: id)
+        let actionItems = await DatabaseManager.shared.fetchActionItemsAsync(sessionId: id)
         var fullSession = session
         fullSession.segments = segments
-        return exportSessionMarkdown(fullSession)
+        fullSession.actionItems = actionItems
+        return await exportSessionMarkdown(fullSession)
     }
     
     @discardableResult
-    public func exportSessionMarkdown(_ session: MeetingSession) -> URL? {
+    public func exportSessionMarkdown(_ session: MeetingSession) async -> URL? {
         guard !isMeetingFinalizing || meetingCoordinator.activeSession?.id != session.id else { return nil }
         let md = session.exportMarkdown()
         let pasteboard = NSPasteboard.general
@@ -634,9 +638,12 @@ public final class AppCoordinator: ObservableObject {
         do {
             let directory = try EchoSettings.ensureExportDirectory()
             let timestamp = ISO8601DateFormatter().string(from: session.startTime).replacingOccurrences(of: ":", with: "-")
-            let filename = "echo_meeting_\(timestamp).md"
+            let sessionSlug = session.id.uuidString.prefix(8).lowercased()
+            let filename = "echo_meeting_\(timestamp)_\(sessionSlug).md"
             let url = directory.appendingPathComponent(filename)
-            try md.write(to: url, atomically: true, encoding: .utf8)
+            try await Task.detached {
+                try md.write(to: url, atomically: true, encoding: .utf8)
+            }.value
             statusMessage = "Exported to \(url.lastPathComponent)"
             print("Meeting exported to clipboard and \(url.path)")
             return url

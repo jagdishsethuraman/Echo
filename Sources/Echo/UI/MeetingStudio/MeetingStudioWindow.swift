@@ -68,17 +68,12 @@ private struct MeetingStudioHostView: View {
                 }
             },
             onExportMarkdown: {
-                let notes = MeetingNotesExtractor.formatMarkdown(
-                    title: session.title,
-                    decisions: MeetingNotesExtractor.extractDecisions(from: session.segments),
-                    actionItems: MeetingNotesExtractor.extractActionItems(from: session.segments).map { ActionItemState(text: $0, isDone: false) }
-                )
-                var sessionWithSummary = session
-                sessionWithSummary.summaryMarkdown = notes
-                let text = sessionWithSummary.exportMarkdown()
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(text, forType: .string)
+                Task {
+                    var sessionWithItems = session
+                    let persistedItems = await DatabaseManager.shared.fetchActionItemsAsync(sessionId: session.id)
+                    sessionWithItems.actionItems = persistedItems.isEmpty ? session.actionItems : persistedItems
+                    await coordinator.exportSessionMarkdown(sessionWithItems)
+                }
             }
         )
     }

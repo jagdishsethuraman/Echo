@@ -1,5 +1,17 @@
 import Foundation
 
+public struct ActionItemState: Identifiable, Codable, Sendable, Equatable {
+    public let id: UUID
+    public var text: String
+    public var isDone: Bool
+
+    public init(id: UUID = UUID(), text: String, isDone: Bool = false) {
+        self.id = id
+        self.text = text
+        self.isDone = isDone
+    }
+}
+
 public struct TranscriptSegment: Identifiable, Codable, Sendable, Equatable {
     public let id: UUID
     public let speaker: SpeakerTrack
@@ -29,6 +41,7 @@ public struct MeetingSession: Identifiable, Codable, Sendable {
     public var endTime: Date?
     public var segments: [TranscriptSegment]
     public var summaryMarkdown: String?
+    public var actionItems: [ActionItemState]
     
     public init(
         id: UUID = UUID(),
@@ -36,7 +49,8 @@ public struct MeetingSession: Identifiable, Codable, Sendable {
         startTime: Date = Date(),
         endTime: Date? = nil,
         segments: [TranscriptSegment] = [],
-        summaryMarkdown: String? = nil
+        summaryMarkdown: String? = nil,
+        actionItems: [ActionItemState] = []
     ) {
         self.id = id
         self.title = title
@@ -44,10 +58,30 @@ public struct MeetingSession: Identifiable, Codable, Sendable {
         self.endTime = endTime
         self.segments = segments
         self.summaryMarkdown = summaryMarkdown
+        self.actionItems = actionItems
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, startTime, endTime, segments, summaryMarkdown, actionItems
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.startTime = try container.decode(Date.self, forKey: .startTime)
+        self.endTime = try container.decodeIfPresent(Date.self, forKey: .endTime)
+        self.segments = try container.decodeIfPresent([TranscriptSegment].self, forKey: .segments) ?? []
+        self.summaryMarkdown = try container.decodeIfPresent(String.self, forKey: .summaryMarkdown)
+        self.actionItems = try container.decodeIfPresent([ActionItemState].self, forKey: .actionItems) ?? []
     }
     
-    /// Export meeting session to clean Markdown document
-    public func exportMarkdown() -> String {
+    /// Export meeting session to clean Markdown document.
+    /// Uses passed or persistent decisions and action items to guarantee unified output.
+    public func exportMarkdown(
+        decisions: [String]? = nil,
+        actionItems: [ActionItemState]? = nil
+    ) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
@@ -62,9 +96,30 @@ public struct MeetingSession: Identifiable, Codable, Sendable {
         }
         md += "**Total Utterances:** \(segments.count)\n\n"
         
-        if let summary = summaryMarkdown, !summary.isEmpty {
+        let itemsToExport = actionItems ?? self.actionItems
+        let hasDecisions = decisions != nil && !decisions!.isEmpty
+        let hasActionItems = !itemsToExport.isEmpty
+        let hasSummary = summaryMarkdown != nil && !summaryMarkdown!.isEmpty
+        
+        if hasSummary || hasDecisions || hasActionItems {
             md += "## Executive Summary & Action Items\n\n"
-            md += summary + "\n\n"
+            if let summary = summaryMarkdown, !summary.isEmpty {
+                md += summary + "\n\n"
+            }
+            if let decisions, !decisions.isEmpty {
+                md += "### Key Decisions\n"
+                for d in decisions {
+                    md += "- \(d)\n"
+                }
+                md += "\n"
+            }
+            if !itemsToExport.isEmpty {
+                md += "### Action Items\n"
+                for item in itemsToExport {
+                    md += "- [\(item.isDone ? "x" : " ")] \(item.text)\n"
+                }
+                md += "\n"
+            }
         }
         
         md += "## Transcript\n\n"

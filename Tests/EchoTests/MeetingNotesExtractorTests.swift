@@ -144,4 +144,32 @@ struct MeetingNotesExtractorTests {
         #expect(md.contains("- [x] Verify GitHub Actions CI"))
         #expect(md.contains("- [ ] Add unit tests"))
     }
+
+    @Test func incrementalExtractorOnlyScansNewSegments() {
+        let extractor = IncrementalNotesExtractor()
+        let sessionID = UUID()
+
+        let seg1 = TranscriptSegment(speaker: .you, text: "We decided to implement incremental NLP caching.", durationSeconds: 2.0)
+        let seg2 = TranscriptSegment(speaker: .meeting, text: "I will update the benchmark tests.", durationSeconds: 2.0)
+
+        // Pass 1: seg1 and seg2
+        let (decisions1, newActions1) = extractor.update(segments: [seg1, seg2], for: sessionID)
+        #expect(decisions1.count == 1)
+        #expect(decisions1[0].contains("incremental NLP"))
+        #expect(newActions1.count == 1)
+        #expect(newActions1[0].contains("benchmark tests"))
+
+        // Pass 2: seg1, seg2, and new seg3
+        let seg3 = TranscriptSegment(speaker: .you, text: "Make sure to tag v1.4.3.", durationSeconds: 1.5)
+        let (decisions2, newActions2) = extractor.update(segments: [seg1, seg2, seg3], for: sessionID)
+        #expect(decisions2.count == 1) // No new decision
+        #expect(newActions2.count == 1) // ONLY seg3's new action item emitted!
+        #expect(newActions2[0].localizedCaseInsensitiveContains("tag v1.4.3"))
+
+        // Switching session clears cache
+        let session2ID = UUID()
+        let (decisions3, newActions3) = extractor.update(segments: [seg1], for: session2ID)
+        #expect(decisions3.count == 1)
+        #expect(newActions3.isEmpty)
+    }
 }

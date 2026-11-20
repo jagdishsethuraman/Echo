@@ -3,18 +3,6 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 
-public struct ActionItemState: Identifiable, Sendable {
-    public let id: UUID
-    public var text: String
-    public var isDone: Bool
-
-    public init(id: UUID = UUID(), text: String, isDone: Bool = false) {
-        self.id = id
-        self.text = text
-        self.isDone = isDone
-    }
-}
-
 public struct LiveAudioMetersCluster: View {
     @ObservedObject var levels: MeetingAudioLevels
 
@@ -61,8 +49,11 @@ public struct MeetingStudioView: View {
     @State private var isAddingActionItem: Bool = false
     @FocusState private var isSearchFocused: Bool
     @State private var actionItems: [ActionItemState] = []
+    @State private var decisions: [String] = []
     @State private var isAccessibilityTrusted: Bool = AXIsProcessTrusted()
     @State private var isMicrophoneAuthorized: Bool = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+
+    private let incrementalExtractor = IncrementalNotesExtractor()
 
     public init(
         session: MeetingSession,
@@ -95,16 +86,31 @@ public struct MeetingStudioView: View {
         )
     }
 
-    private var decisions: [String] {
-        MeetingNotesExtractor.extractDecisions(from: session.segments)
+    private func loadSessionData(for sessionId: UUID) {
+        incrementalExtractor.reset(for: sessionId)
+        let persisted = DatabaseManager.shared.fetchActionItems(sessionId: sessionId)
+        actionItems = persisted
+        let (updatedDecisions, newActions) = incrementalExtractor.update(segments: session.segments, for: sessionId)
+        decisions = updatedDecisions
+        for text in newActions {
+            let lower = text.lowercased()
+            if !actionItems.contains(where: { $0.text.lowercased() == lower }) {
+                let item = ActionItemState(text: text, isDone: false)
+                actionItems.append(item)
+                DatabaseManager.shared.saveActionItem(item, sessionId: sessionId)
+            }
+        }
     }
 
     private func syncActionItems() {
-        let extracted = MeetingNotesExtractor.extractActionItems(from: session.segments)
-        for text in extracted {
+        let (updatedDecisions, newActions) = incrementalExtractor.update(segments: session.segments, for: session.id)
+        decisions = updatedDecisions
+        for text in newActions {
             let lower = text.lowercased()
             if !actionItems.contains(where: { $0.text.lowercased() == lower }) {
-                actionItems.append(ActionItemState(text: text, isDone: false))
+                let item = ActionItemState(text: text, isDone: false)
+                actionItems.append(item)
+                DatabaseManager.shared.saveActionItem(item, sessionId: session.id)
             }
         }
     }
@@ -142,7 +148,9 @@ public struct MeetingStudioView: View {
     private func commitNewActionItem() {
         let trimmed = newActionText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        actionItems.append(ActionItemState(text: trimmed, isDone: false))
+        let item = ActionItemState(text: trimmed, isDone: false)
+        actionItems.append(item)
+        DatabaseManager.shared.saveActionItem(item, sessionId: session.id)
         newActionText = ""
     }
 
@@ -194,10 +202,13 @@ public struct MeetingStudioView: View {
         .frame(minWidth: 840, minHeight: 560)
         .onAppear {
             refreshPermissions()
-            syncActionItems()
+            loadSessionData(for: session.id)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshPermissions()
+        }
+        .onChange(of: session.id) { _, newId in
+            loadSessionData(for: newId)
         }
         .onChange(of: session.segments) {
             syncActionItems()
@@ -681,6 +692,7 @@ public struct MeetingStudioView: View {
                         Button {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 item.isDone.toggle()
+                                DatabaseManager.shared.updateActionItemDone(id: item.id, isDone: item.isDone)
                             }
                         } label: {
                             HStack(spacing: 8) {

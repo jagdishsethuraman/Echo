@@ -368,7 +368,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
     @objc private func exportHistorySession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID else { return }
         Task { @MainActor in
-            coordinator.exportSession(id: id)
+            await coordinator.exportSession(id: id)
         }
     }
 

@@ -262,3 +262,85 @@ public enum MeetingNotesExtractor {
         return cleaned
     }
 }
+
+/// Thread-safe incremental extractor that caches NLP decisions and action items by segment ID,
+/// avoiding O(N) re-scans of meeting history as new segments arrive.
+public final class IncrementalNotesExtractor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sessionID: UUID?
+    private var cachedSegmentNotes: [UUID: MeetingNotes] = [:]
+    private var cachedDecisions: [String] = []
+    private var decisionSet: Set<String> = []
+    private var cachedActionTexts: [String] = []
+    private var actionSet: Set<String> = []
+
+    public init() {}
+
+    public func reset(for sessionID: UUID? = nil) {
+        lock.withLock {
+            self.sessionID = sessionID
+            self.cachedSegmentNotes.removeAll()
+            self.cachedDecisions.removeAll()
+            self.decisionSet.removeAll()
+            self.cachedActionTexts.removeAll()
+            self.actionSet.removeAll()
+        }
+    }
+
+    /// Incrementally processes segments: only scans segments not yet in the cache.
+    /// Returns the complete deduplicated decisions and newly extracted action item texts.
+    public func update(
+        segments: [TranscriptSegment],
+        for currentSessionID: UUID
+    ) -> (decisions: [String], newActionTexts: [String]) {
+        lock.withLock {
+            if self.sessionID != currentSessionID {
+                self.sessionID = currentSessionID
+                self.cachedSegmentNotes.removeAll()
+                self.cachedDecisions.removeAll()
+                self.decisionSet.removeAll()
+                self.cachedActionTexts.removeAll()
+                self.actionSet.removeAll()
+            }
+
+            var newActions: [String] = []
+
+            for segment in segments {
+                let notes: MeetingNotes
+                if let existing = cachedSegmentNotes[segment.id] {
+                    notes = existing
+                } else {
+                    notes = MeetingNotesExtractor.extractAll(from: [segment])
+                    cachedSegmentNotes[segment.id] = notes
+
+                    for decision in notes.decisions {
+                        let key = decision.lowercased()
+                        if !decisionSet.contains(key) {
+                            decisionSet.insert(key)
+                            cachedDecisions.append(decision)
+                        }
+                    }
+
+                    for action in notes.actionItems {
+                        let key = action.lowercased()
+                        if !actionSet.contains(key) {
+                            actionSet.insert(key)
+                            cachedActionTexts.append(action)
+                            newActions.append(action)
+                        }
+                    }
+                }
+            }
+
+            return (cachedDecisions, newActions)
+        }
+    }
+
+    public var decisions: [String] {
+        lock.withLock { cachedDecisions }
+    }
+
+    public var actionTexts: [String] {
+        lock.withLock { cachedActionTexts }
+    }
+}

@@ -266,6 +266,22 @@ public final class DatabaseManager: @unchecked Sendable {
         if version < 2 {
             try migrate(to: 2, sql: "CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time DESC);")
         }
+
+        // v3: action items table for meeting studio persistence and export integrity
+        if version < 3 {
+            let actionItemsSQL = """
+            CREATE TABLE IF NOT EXISTS action_items (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                is_done INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_action_items_session ON action_items(session_id);
+            """
+            try migrate(to: 3, sql: actionItemsSQL)
+        }
     }
 
     private func migrate(to version: Int32, sql: String) throws {
@@ -430,6 +446,121 @@ public final class DatabaseManager: @unchecked Sendable {
         }
         sqlite3_finalize(stmt)
     }
+
+    // MARK: - Action Items
+
+    private func saveActionItemLocked(_ item: ActionItemState, sessionId: UUID) throws {
+        guard let db else {
+            throw DatabaseError.unavailable("Database pointer is nil")
+        }
+        let sql = """
+        INSERT INTO action_items (id, session_id, text, is_done, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            text = excluded.text,
+            is_done = excluded.is_done;
+        """
+
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            throw DatabaseError.executionFailed("saveActionItem prepare failed: \(msg)")
+        }
+
+        bindText(stmt, 1, item.id.uuidString)
+        bindText(stmt, 2, sessionId.uuidString)
+        bindText(stmt, 3, item.text)
+        sqlite3_bind_int(stmt, 4, item.isDone ? 1 : 0)
+        sqlite3_bind_double(stmt, 5, Date().timeIntervalSince1970)
+
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            let msg = String(cString: sqlite3_errmsg(db))
+            throw DatabaseError.executionFailed("saveActionItem step failed: \(msg)")
+        }
+    }
+
+    private func fetchActionItemsLocked(sessionId: UUID) -> [ActionItemState] {
+        guard let db else { return [] }
+        let sql = "SELECT id, text, is_done FROM action_items WHERE session_id = ? ORDER BY created_at ASC;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        var results: [ActionItemState] = []
+
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, sessionId.uuidString)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let idCString = sqlite3_column_text(stmt, 0),
+                      let textCString = sqlite3_column_text(stmt, 1),
+                      let id = UUID(uuidString: String(cString: idCString)) else {
+                    continue
+                }
+                let text = String(cString: textCString)
+                let isDone = sqlite3_column_int(stmt, 2) != 0
+                results.append(ActionItemState(id: id, text: text, isDone: isDone))
+            }
+        }
+        return results
+    }
+
+    public func saveActionItem(_ item: ActionItemState, sessionId: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            try saveActionItemLocked(item, sessionId: sessionId)
+        } catch {
+            reportError("saveActionItem")
+        }
+    }
+
+    public func saveActionItems(_ items: [ActionItemState], sessionId: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            for item in items {
+                try saveActionItemLocked(item, sessionId: sessionId)
+            }
+        } catch {
+            reportError("saveActionItems")
+        }
+    }
+
+    public func updateActionItemDone(id: UUID, isDone: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return }
+        let sql = "UPDATE action_items SET is_done = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, isDone ? 1 : 0)
+            bindText(stmt, 2, id.uuidString)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                reportError("updateActionItemDone")
+            }
+        }
+    }
+
+    public func fetchActionItems(sessionId: UUID) -> [ActionItemState] {
+        lock.lock()
+        defer { lock.unlock() }
+        return fetchActionItemsLocked(sessionId: sessionId)
+    }
+
+    public func deleteActionItem(id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db else { return }
+        let sql = "DELETE FROM action_items WHERE id = ?;"
+        var stmt: OpaquePointer?
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            bindText(stmt, 1, id.uuidString)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                reportError("deleteActionItem")
+            }
+        }
+    }
     
     /// Retention: remove sessions that never captured an utterance.
     /// - Parameters:
@@ -591,6 +722,60 @@ public final class DatabaseManager: @unchecked Sendable {
             }
         }
     }
+
+    public func fetchUtterancesAsync(sessionId: UUID) async -> [TranscriptSegment] {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                let utterances = self.fetchUtterances(sessionId: sessionId)
+                continuation.resume(returning: utterances)
+            }
+        }
+    }
+
+    public func saveActionItemAsync(_ item: ActionItemState, sessionId: UUID) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.saveActionItem(item, sessionId: sessionId)
+                continuation.resume()
+            }
+        }
+    }
+
+    public func saveActionItemsAsync(_ items: [ActionItemState], sessionId: UUID) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.saveActionItems(items, sessionId: sessionId)
+                continuation.resume()
+            }
+        }
+    }
+
+    public func updateActionItemDoneAsync(id: UUID, isDone: Bool) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.updateActionItemDone(id: id, isDone: isDone)
+                continuation.resume()
+            }
+        }
+    }
+
+    public func fetchActionItemsAsync(sessionId: UUID) async -> [ActionItemState] {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                let items = self.fetchActionItems(sessionId: sessionId)
+                continuation.resume(returning: items)
+            }
+        }
+    }
+
+    public func deleteActionItemAsync(id: UUID) async {
+        await withCheckedContinuation { continuation in
+            dbQueue.async {
+                self.deleteActionItem(id: id)
+                continuation.resume()
+            }
+        }
+    }
     
     public func fetchSession(id: UUID) -> MeetingSession? {
         lock.lock()
@@ -614,13 +799,15 @@ public final class DatabaseManager: @unchecked Sendable {
                     if let sumCString = sqlite3_column_text(stmt, 4) {
                         summary = String(cString: sumCString)
                     }
+                    let actionItems = fetchActionItemsLocked(sessionId: id)
                     result = MeetingSession(
                         id: id,
                         title: title,
                         startTime: startTime,
                         endTime: endTime,
                         segments: [],
-                        summaryMarkdown: summary
+                        summaryMarkdown: summary,
+                        actionItems: actionItems
                     )
                 }
             }

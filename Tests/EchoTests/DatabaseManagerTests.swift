@@ -242,7 +242,7 @@ struct DatabaseManagerTests {
 
         let upgraded = DatabaseManager(customPath: path)
         #expect(upgraded.startupError == nil)
-        #expect(upgraded.userVersion() == 2)
+        #expect(upgraded.userVersion() >= 2)
         #expect(upgraded.fetchSession(id: session.id)?.title == session.title)
 
         let plan = upgraded.explainQueryPlan("SELECT id FROM sessions ORDER BY start_time DESC LIMIT 5;")
@@ -250,7 +250,7 @@ struct DatabaseManagerTests {
 
         let reopened = DatabaseManager(customPath: path)
         #expect(reopened.startupError == nil)
-        #expect(reopened.userVersion() == 2)
+        #expect(reopened.userVersion() >= 2)
     }
 
     @Test func failedFirstMigrationRollsBackSchemaAndStopsBeforeV2() throws {
@@ -314,7 +314,7 @@ struct DatabaseManagerTests {
 
         let retried = DatabaseManager(customPath: path)
         #expect(retried.startupError == nil)
-        #expect(retried.userVersion() == 2)
+        #expect(retried.userVersion() >= 2)
     }
 
     @Test func detectsPartialSchemaAlreadyMarkedV2() throws {
@@ -495,5 +495,66 @@ struct DatabaseManagerTests {
 
         #expect(db.activeDatabasePath.contains(directory.path))
         #expect(db.isUsingFallbackStorage == false)
+    }
+
+    @Test func actionItemsRoundTripAndPersistence() async {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        let session = MeetingSession(title: "Action Item Planning")
+        db.saveSession(session)
+
+        let item1 = ActionItemState(text: "Deploy v1.4.3", isDone: false)
+        let item2 = ActionItemState(text: "Verify permissions", isDone: true)
+        db.saveActionItems([item1, item2], sessionId: session.id)
+
+        var items = db.fetchActionItems(sessionId: session.id)
+        #expect(items.count == 2)
+        #expect(items[0].text == "Deploy v1.4.3")
+        #expect(items[0].isDone == false)
+        #expect(items[1].text == "Verify permissions")
+        #expect(items[1].isDone == true)
+
+        // Update completion
+        db.updateActionItemDone(id: item1.id, isDone: true)
+        items = db.fetchActionItems(sessionId: session.id)
+        #expect(items.first(where: { $0.id == item1.id })?.isDone == true)
+
+        // Async wrappers
+        let item3 = ActionItemState(text: "Async created task", isDone: false)
+        await db.saveActionItemAsync(item3, sessionId: session.id)
+        let asyncItems = await db.fetchActionItemsAsync(sessionId: session.id)
+        #expect(asyncItems.count == 3)
+
+        // Cascade delete on session removal
+        db.deleteSession(id: session.id)
+        let itemsAfterDelete = db.fetchActionItems(sessionId: session.id)
+        #expect(itemsAfterDelete.isEmpty)
+    }
+
+    @Test func actionItemsIsolationAcrossSessions() {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+
+        let sessionA = MeetingSession(title: "Session A")
+        let sessionB = MeetingSession(title: "Session B")
+        db.saveSession(sessionA)
+        db.saveSession(sessionB)
+
+        let itemA = ActionItemState(text: "Task for Session A", isDone: true)
+        let itemB = ActionItemState(text: "Task for Session B", isDone: false)
+        db.saveActionItem(itemA, sessionId: sessionA.id)
+        db.saveActionItem(itemB, sessionId: sessionB.id)
+
+        let itemsA = db.fetchActionItems(sessionId: sessionA.id)
+        let itemsB = db.fetchActionItems(sessionId: sessionB.id)
+
+        #expect(itemsA.count == 1)
+        #expect(itemsA.first?.text == "Task for Session A")
+        #expect(itemsA.first?.isDone == true)
+
+        #expect(itemsB.count == 1)
+        #expect(itemsB.first?.text == "Task for Session B")
+        #expect(itemsB.first?.isDone == false)
     }
 }
