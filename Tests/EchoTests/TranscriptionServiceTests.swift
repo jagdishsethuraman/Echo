@@ -163,4 +163,37 @@ struct TranscriptionServiceTests {
         }
         #expect(service.isIdle)
     }
+
+    @Test func queueRejectsSubmissionsExceedingBacklogBudget() async {
+        let chunk = Data(repeating: 0, count: 100)
+        let service = TranscriptionService(
+            engine: { _ in
+                try await Task.sleep(for: .milliseconds(50))
+                return "ok"
+            },
+            maxConcurrent: 1,
+            maxPendingBytes: 200
+        )
+
+        let t1 = service.submitReporting(pcmData: chunk) { _ in }
+        #expect(service.currentQueuedBytes == 100)
+
+        let t2 = service.submitReporting(pcmData: chunk) { _ in }
+        #expect(service.currentQueuedBytes == 200)
+
+        var receivedError: TranscriptionService.TranscriptionError?
+        let t3 = service.submitReporting(pcmData: chunk) { result in
+            if case .failure(let err as TranscriptionService.TranscriptionError) = result {
+                receivedError = err
+            }
+        }
+        _ = await t3.value
+
+        #expect(receivedError == .queueOverloaded(bytesQueued: 200, maxBytes: 200))
+
+        _ = await t1.value
+        _ = await t2.value
+        _ = await service.waitUntilIdle(timeout: 2)
+        #expect(service.currentQueuedBytes == 0)
+    }
 }

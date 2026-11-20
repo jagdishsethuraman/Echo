@@ -14,20 +14,39 @@ public final class TranscriptionService: @unchecked Sendable {
     public typealias Completion = @Sendable (String?) async -> Void
     public typealias ReportingCompletion = @Sendable (Result<String, Error>) async -> Void
     public typealias Engine = @Sendable (Data) async throws -> String
+
+    public enum TranscriptionError: LocalizedError, Sendable, Equatable {
+        case queueOverloaded(bytesQueued: Int, maxBytes: Int)
+
+        public var errorDescription: String? {
+            switch self {
+            case .queueOverloaded(let queued, let max):
+                return "Inference queue overloaded (\(queued / 1024) KB queued, limit \(max / 1024) KB)."
+            }
+        }
+    }
     
     private let engine: Engine
     private let checkEngineReadiness: @Sendable () throws -> Void
     private let semaphore: AsyncSemaphore
+    public let maxPendingBytes: Int
     
     private let stateLock = NSLock()
     private var outstanding = 0
+    private var queuedBytes = 0
+
+    public var currentQueuedBytes: Int {
+        stateLock.withLock { queuedBytes }
+    }
     
     public init(
         runner: PhononProcessRunner,
         maxConcurrent: Int = 1,
+        maxPendingBytes: Int = 3_840_000,
         tempDirectory: URL = AudioTempDirectory.rootURL
     ) {
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
+        self.maxPendingBytes = maxPendingBytes
         self.checkEngineReadiness = { try runner.checkReadiness() }
         self.engine = { pcmData in
             let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
@@ -42,10 +61,11 @@ public final class TranscriptionService: @unchecked Sendable {
     }
     
     /// Test seam: drive the queue with a closure instead of a child process.
-    init(engine: @escaping Engine, maxConcurrent: Int = 1) {
+    init(engine: @escaping Engine, maxConcurrent: Int = 1, maxPendingBytes: Int = 3_840_000) {
         self.engine = engine
         self.checkEngineReadiness = {}
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
+        self.maxPendingBytes = maxPendingBytes
     }
 
     /// Check that the configured engine executable is available before capture.
@@ -68,9 +88,28 @@ public final class TranscriptionService: @unchecked Sendable {
         pcmData: Data,
         completion: @escaping ReportingCompletion
     ) -> Task<Void, Never> {
-        begin()
+        let shouldReject: TranscriptionError? = stateLock.withLock {
+            if queuedBytes + pcmData.count > maxPendingBytes {
+                return TranscriptionError.queueOverloaded(bytesQueued: queuedBytes, maxBytes: maxPendingBytes)
+            }
+            outstanding += 1
+            queuedBytes += pcmData.count
+            return nil
+        }
+
+        if let error = shouldReject {
+            return Task {
+                await completion(.failure(error))
+            }
+        }
+
         return Task {
-            defer { finish() }
+            defer {
+                self.stateLock.withLock {
+                    self.outstanding -= 1
+                    self.queuedBytes -= pcmData.count
+                }
+            }
             let result: Result<String, Error>
             do {
                 result = .success(try await transcribe(pcmData: pcmData))
@@ -111,18 +150,6 @@ public final class TranscriptionService: @unchecked Sendable {
     }
     
     // MARK: - Outstanding tracking
-    
-    private func begin() {
-        stateLock.lock()
-        outstanding += 1
-        stateLock.unlock()
-    }
-    
-    private func finish() {
-        stateLock.lock()
-        outstanding -= 1
-        stateLock.unlock()
-    }
 }
 
 /// Async FIFO semaphore with a synchronous `release`.

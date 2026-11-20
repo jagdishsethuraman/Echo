@@ -218,4 +218,15 @@ struct TextInjectorTests {
         // the clipboard for a manual paste.
         #expect(pasteboard.string(forType: .string) == "Copied text ")
     }
+
+    @Test func writeToClipboardPlacesTextAndIncrementsChangeCount() {
+        let pasteboard = InMemoryPasteboard(initialString: "before")
+        let injector = makeInjector(pasteboard: pasteboard)
+
+        let initialChangeCount = pasteboard.changeCount
+        let newChangeCount = injector.writeToClipboard("new clipboard text")
+
+        #expect(pasteboard.string(forType: .string) == "new clipboard text")
+        #expect(newChangeCount > initialChangeCount)
+    }
 }

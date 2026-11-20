@@ -435,7 +435,7 @@ public final class TextInjector: @unchecked Sendable {
     }
 
     @discardableResult
-    private func writeToClipboard(_ text: String) -> Int {
+    public func writeToClipboard(_ text: String) -> Int {
         _ = pasteboard.clearContents()
         _ = pasteboard.declareTypes([.string], owner: nil)
         _ = pasteboard.setString(text, forType: .string)

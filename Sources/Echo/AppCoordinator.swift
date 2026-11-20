@@ -8,6 +8,7 @@ public final class AppCoordinator: ObservableObject {
     
     // Core Engine Subsystems
     public let phononRunner: PhononProcessRunner
+    public let transcriptionService: TranscriptionService
     public let textInjector: TextInjector
     public let hotkeyManager: HotkeyManager
     public let floatingPill: FloatingPillPanel
@@ -25,6 +26,33 @@ public final class AppCoordinator: ObservableObject {
     private var isMeetingTransitioning = false
     private var isShuttingDown = false
     private let dictationWork = DispatchGroup()
+
+    public struct DictationSession: Sendable {
+        public let id: UUID
+        public let startTime: Date
+        public let meetingSessionID: UUID?
+        public let targetBundleID: String?
+        public let targetAppName: String?
+        public let targetPID: pid_t?
+
+        public init(
+            id: UUID = UUID(),
+            startTime: Date = Date(),
+            meetingSessionID: UUID? = nil,
+            targetBundleID: String? = nil,
+            targetAppName: String? = nil,
+            targetPID: pid_t? = nil
+        ) {
+            self.id = id
+            self.startTime = startTime
+            self.meetingSessionID = meetingSessionID
+            self.targetBundleID = targetBundleID
+            self.targetAppName = targetAppName
+            self.targetPID = targetPID
+        }
+    }
+
+    private var activeDictationSession: DictationSession?
 
     // Live Progressive Dictation State
     private let dictationBuffer = AudioPCMBufferStore()
@@ -65,8 +93,10 @@ public final class AppCoordinator: ObservableObject {
     public init() {
         let runner = PhononProcessRunner()
         let hub = AudioHub()
+        let service = TranscriptionService(runner: runner)
         
         self.phononRunner = runner
+        self.transcriptionService = service
         self.textInjector = TextInjector()
         self.hotkeyManager = HotkeyManager()
         self.floatingPill = FloatingPillPanel()
@@ -74,7 +104,8 @@ public final class AppCoordinator: ObservableObject {
         self.micEngine = hub.micEngine
         self.meetingCoordinator = MeetingCoordinator(
             dualChannel: DualChannelCoordinator(hub: hub),
-            phononRunner: runner
+            phononRunner: runner,
+            transcriptionService: service
         )
         
         setupHotkeyWiring()
@@ -240,7 +271,17 @@ public final class AppCoordinator: ObservableObject {
         
         dictationBuffer.removeAll()
         
-        dictationStartTime = Date()
+        let now = Date()
+        dictationStartTime = now
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        activeDictationSession = DictationSession(
+            id: UUID(),
+            startTime: now,
+            meetingSessionID: meetingCoordinator.recordingSessionID,
+            targetBundleID: frontApp?.bundleIdentifier,
+            targetAppName: frontApp?.localizedName,
+            targetPID: frontApp?.processIdentifier
+        )
         floatingPill.show(state: .listening(
             audioLevel: 0.2,
             livePartial: "",
@@ -329,19 +370,15 @@ public final class AppCoordinator: ObservableObject {
         }
     }
     
-    /// Write raw PCM to a secure temporary WAV file (0600 permissions), transcribe it, and clean up.
+    /// Transcribe raw PCM via the coordinated TranscriptionService.
     private func transcribePCM(_ pcmData: Data) async throws -> String {
-        let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
-        let tempFile = try AudioTempDirectory.writeTempWAV(data: wavData, prefix: "echo_audio")
-        defer { try? FileManager.default.removeItem(at: tempFile) }
-        
-        let (transcript, _) = try await phononRunner.transcribe(fileURL: tempFile)
-        return transcript
+        return try await transcriptionService.transcribe(pcmData: pcmData)
     }
     
     public func finishDictation() async {
         guard isDictating, !isShuttingDown else { return }
-        let meetingSessionID = meetingCoordinator.recordingSessionID
+        guard let session = activeDictationSession else { return }
+        activeDictationSession = nil
         dictationWork.enter()
         defer { dictationWork.leave() }
         isDictating = false
@@ -360,6 +397,9 @@ public final class AppCoordinator: ObservableObject {
         
         let captured = dictationBuffer.takeAll()
         let capturedData = captured.pcm
+        let fallbackPartial = currentLivePartial
+        let fallbackTruncated = (capturedData.count > Self.partialWindowBytes)
+        currentLivePartial = ""
         lastPartialByteCount = 0
         
         guard capturedData.count >= 3200 else { // Minimum 100ms
@@ -373,11 +413,16 @@ public final class AppCoordinator: ObservableObject {
             let transcript = try await transcribePCM(capturedData)
             
             var trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty && !currentLivePartial.isEmpty {
-                // The live partial is only a window of the recording.
-                trimmed = currentLivePartial
+            var wasRecoveredFromPartial = false
+
+            if trimmed.isEmpty && !fallbackPartial.isEmpty {
+                let cleaned = fallbackPartial
                     .replacingOccurrences(of: "… ", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleaned.isEmpty {
+                    trimmed = fallbackTruncated ? "[Partial] " + cleaned : cleaned
+                    wasRecoveredFromPartial = true
+                }
             }
             
             if !trimmed.isEmpty {
@@ -388,13 +433,15 @@ public final class AppCoordinator: ObservableObject {
                 // 1. Separate quick dictations from meeting sessions:
                 // Only append to meeting timeline if a meeting is actively in progress;
                 // otherwise persist to SQLite as standalone dictation.
-                let durationSec = Double(capturedData.count) / Double(AudioPCMBufferStore.bytesPerSecond)
-                if !isShuttingDown, let meetingSessionID, meetingSessionID == meetingCoordinator.recordingSessionID {
+                let rawDurationSec = Double(capturedData.count) / Double(AudioPCMBufferStore.bytesPerSecond)
+                let durationSec = wasRecoveredFromPartial && fallbackTruncated ? min(rawDurationSec, 12.0) : rawDurationSec
+                
+                if !isShuttingDown, let meetingSessionID = session.meetingSessionID, meetingSessionID == meetingCoordinator.recordingSessionID {
                     await meetingCoordinator.appendDictation(text: sanitized, duration: durationSec)
                 } else {
                     let segment = TranscriptSegment(
                         speaker: .you,
-                        timestamp: Date(),
+                        timestamp: session.startTime,
                         text: sanitized,
                         durationSeconds: durationSec
                     )
@@ -402,23 +449,40 @@ public final class AppCoordinator: ObservableObject {
                 }
                 
                 guard !isShuttingDown else { return }
-                // 2. Direct injection into active text cursor + clipboard placement
-                let injectionResult = await textInjector.inject(text: sanitized)
                 
-                let feedbackBadge: String
-                switch injectionResult.method {
-                case .accessibilityDirect:
-                    feedbackBadge = "✓ Injected at cursor"
-                case .directTyping:
-                    feedbackBadge = "✓ Typed into field"
-                case .syntheticPaste:
-                    feedbackBadge = "✓ Auto-Pasted"
-                case .clipboardOnly:
-                    feedbackBadge = "✓ Copied to Clipboard"
+                // 2. Focus validation: Ensure active application hasn't changed during recognition
+                let currentFront = NSWorkspace.shared.frontmostApplication
+                let focusChanged = (session.targetBundleID != nil && currentFront?.bundleIdentifier != session.targetBundleID)
+
+                if focusChanged {
+                    // Safe fallback: Do not inject private text into the wrong newly-focused app!
+                    _ = textInjector.writeToClipboard(sanitized)
+                    let newAppName = currentFront?.localizedName ?? "another application"
+                    floatingPill.updateState(.success(preview: "✓ Focus Changed: Copied to Clipboard"))
+                    statusMessage = "Focus changed to \(newAppName): Copied to clipboard"
+                } else {
+                    let injectionResult = await textInjector.inject(text: sanitized)
+                    
+                    let feedbackBadge: String
+                    switch injectionResult.method {
+                    case .accessibilityDirect:
+                        feedbackBadge = "✓ Injected at cursor"
+                    case .directTyping:
+                        feedbackBadge = "✓ Typed into field"
+                    case .syntheticPaste:
+                        feedbackBadge = "✓ Auto-Pasted"
+                    case .clipboardOnly:
+                        feedbackBadge = "✓ Copied to Clipboard"
+                    }
+                    
+                    if wasRecoveredFromPartial {
+                        floatingPill.updateState(.success(preview: "✓ Recovered Partial: \"\(trimmed.prefix(25))...\""))
+                        statusMessage = "Recovered partial: \"\(trimmed.prefix(30))...\""
+                    } else {
+                        floatingPill.updateState(.success(preview: "\(feedbackBadge): \"\(trimmed.prefix(25))...\""))
+                        statusMessage = "Injected: \"\(trimmed.prefix(30))...\""
+                    }
                 }
-                
-                floatingPill.updateState(.success(preview: "\(feedbackBadge): \"\(trimmed.prefix(25))...\""))
-                statusMessage = "Injected: \"\(trimmed.prefix(30))...\""
             } else {
                 floatingPill.hide()
                 statusMessage = "Echo Ready (Phonon-2 Local)"
@@ -433,6 +497,7 @@ public final class AppCoordinator: ObservableObject {
     
     public func cancelDictation() {
         guard isDictating else { return }
+        activeDictationSession = nil
         isDictating = false
         dictationCaptureActive.set(false)
         partialTimer?.invalidate()
@@ -440,7 +505,9 @@ public final class AppCoordinator: ObservableObject {
         durationTimer?.invalidate()
         durationTimer = nil
         dictationStartTime = nil
+        currentLivePartial = ""
         isTranscribingPartial = false
+        lastPartialByteCount = 0
         
         audioHub.releaseMicrophone()
         hotkeyManager.unlock()
