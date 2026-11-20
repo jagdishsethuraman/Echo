@@ -18,6 +18,11 @@ cp AppIcon.icns Echo.app/Contents/Resources/AppIcon.icns
 echo "==> Ad-hoc code signing Echo.app..."
 codesign --force --deep --sign - --identifier com.ragavij.echo Echo.app
 
+echo "==> Verifying bundle structure..."
+test -f Echo.app/Contents/Info.plist || { echo "❌ Info.plist missing!"; exit 1; }
+test -x Echo.app/Contents/MacOS/Echo || { echo "❌ Executable missing or not executable!"; exit 1; }
+test -f Echo.app/Contents/Resources/AppIcon.icns || { echo "❌ AppIcon.icns missing!"; exit 1; }
+
 echo "==> Verifying signature..."
 codesign --verify --deep --strict --verbose=2 Echo.app
 

@@ -58,12 +58,29 @@ struct EchoMain {
             print("  ECHO — Production Assembly Automated Verification")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             
+            var failedChecks: [String] = []
+
+            // 1. Bundle Invariants
+            let bundle = Bundle.main
+            if bundle.bundlePath.hasSuffix(".app") {
+                if bundle.bundleIdentifier == nil {
+                    failedChecks.append("Missing bundle identifier in Info.plist")
+                }
+                if bundle.infoDictionary?["CFBundleExecutable"] as? String != "Echo" {
+                    failedChecks.append("CFBundleExecutable is not 'Echo'")
+                }
+            }
+
             let coordinator = AppCoordinator.shared
             let menuManager = MenuBarManager.shared
             menuManager.setupMenuBar()
             
             print("\n[1/3] Verifying Subsystem Wiring...")
-            print("  • Phonon Runner: \(coordinator.phononRunner.fermionPath ?? "not found")")
+            let enginePath = coordinator.phononRunner.fermionPath
+            print("  • Phonon Runner: \(enginePath ?? "not found")")
+            if args.contains("--require-engine") && enginePath == nil {
+                failedChecks.append("Required Phonon-2 engine executable not found")
+            }
             print("  • Hotkey Listener: Ready (Monitoring active)")
             print("  • Floating HUD Panel: Ready (canBecomeKey: \(coordinator.floatingPill.canBecomeKey))")
             print("  • Dual Audio Coordinator: Ready")
@@ -82,6 +99,17 @@ struct EchoMain {
             print("  • Window Title: \"\(studio.title)\"")
             print("  • Frame: \(studio.frame.width)x\(studio.frame.height)")
             print("  • StyleMask contains resizable: \(studio.styleMask.contains(.resizable))")
+            if !studio.styleMask.contains(.resizable) {
+                failedChecks.append("Meeting Studio window is missing .resizable style mask")
+            }
+
+            if !failedChecks.isEmpty {
+                fputs("\n❌ Assembly verification FAILED:\n", stderr)
+                for failure in failedChecks {
+                    fputs("  - \(failure)\n", stderr)
+                }
+                exit(EXIT_FAILURE)
+            }
             
             print("\n  Echo Full Assembly Verification: PASSED (100% Operational)")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")

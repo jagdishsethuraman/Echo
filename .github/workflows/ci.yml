@@ -29,3 +29,6 @@ jobs:
 
       - name: Build (release)
         run: swift build -c release
+
+      - name: Assemble and verify app bundle
+        run: ./assemble_app.sh

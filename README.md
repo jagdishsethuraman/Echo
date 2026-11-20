@@ -32,21 +32,33 @@
 
 ## ⚡ Quick Start
 
-### 1. Download or Run the App
-Launch `Echo.app` directly from your Applications folder or workspace:
+### 1. Build & Assemble from Source
+Clone the repository and run the automated assembly script:
 ```bash
-open /Users/ragavij/Documents/Developer/Echo/Echo.app
+git clone https://github.com/jagdishsethuraman/Echo.git
+cd Echo
+./assemble_app.sh
+open Echo.app
+```
+*(Or build via SwiftPM: `swift build -c release`).*
+
+### 2. Speech Engine Setup (Phonon-2 / Fermion)
+Echo utilizes on-device local inference via `phonon-2` (Parakeet-TDT 0.6B). Echo automatically locates the `fermion` binary in your PATH (`/opt/homebrew/bin`, `~/.local/bin`, or `/usr/local/bin`).
+To specify a custom binary location:
+```bash
+defaults write com.ragavij.echo echo.runnerPath /path/to/fermion
 ```
 
-### 2. Grant macOS Accessibility Permission (One-Time)
-Echo requires Accessibility permissions to monitor the `⌃ Control` hotkey and paste text into your active applications:
-1. Open **System Settings → Privacy & Security → Accessibility**.
-2. Select **Echo** and toggle it **ON**.
-*(Echo uses a permanent designated requirement so permissions survive future rebuilds).*
+### 3. Grant macOS Permissions
+Echo requires standard macOS privacy permissions:
+1. **Accessibility:** Open **System Settings → Privacy & Security → Accessibility**, add **Echo**, and toggle it **ON**.
+   *(Note: Local ad-hoc developer builds may require re-toggling if the binary hash changes during development; official signed release builds retain persistent permissions).*
+2. **Microphone:** Allow microphone access when prompted (or in **Privacy & Security → Microphone**).
+3. **Screen & System Audio Recording:** Required for bot-free attendee capture in Meeting Studio (**Privacy & Security → Screen & System Audio Recording**).
 
-### 3. Start Dictating
+### 4. Start Dictating
 - Press and hold **`⌃ Control`** in any application (Notion, Slack, Chrome, VS Code, Notes, TextEdit, Terminal).
-- **Hands-Free Lock Mode:** Double-tap **`⌃ Control`** rapidly to lock recording on (displays `🔒 LOCKED` badge). Speak freely for as long as you want without holding any key, then tap **`⌃ Control`** once to finish and inject!
+- **Hands-Free Lock Mode:** Double-tap **`⌃ Control`** rapidly to lock recording on (displays `🔒 LOCKED` badge; maximum continuous safety cap: 10 minutes). Speak freely without holding any key, then tap **`⌃ Control`** once to finish and inject!
 - Release or unlock: text is automatically capitalized, punctuated, and injected into your active text box.
 
 ---
