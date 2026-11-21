@@ -8,11 +8,12 @@ public final class FloatingPillPanel: NSPanel {
     public var onStopRequested: (() -> Void)?
     public var onCancelRequested: (() -> Void)?
     static let listeningWidth: CGFloat = 480
+    static let pillHeight: CGFloat = 38
     
     public init() {
         self.stateModel = PillStateObservable()
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: Self.listeningWidth, height: 52),
+            contentRect: NSRect(x: 0, y: 0, width: Self.listeningWidth, height: Self.pillHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -22,7 +23,7 @@ public final class FloatingPillPanel: NSPanel {
         self.level = .popUpMenu
         self.isOpaque = false
         self.backgroundColor = .clear
-        self.hasShadow = false
+        self.hasShadow = true
         self.appearance = NSAppearance(named: .darkAqua)
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         self.isMovableByWindowBackground = false
@@ -33,7 +34,12 @@ public final class FloatingPillPanel: NSPanel {
             onCancel: { [weak self] in self?.onCancelRequested?() }
         )
         let hostingView = NSHostingView(rootView: container)
+        hostingView.sizingOptions = []
         hostingView.wantsLayer = true
+        // Clip the AppKit surface too, including frames between animated sizes.
+        hostingView.layer?.isOpaque = false
+        hostingView.layer?.cornerRadius = Self.pillHeight / 2
+        hostingView.layer?.masksToBounds = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.autoresizingMask = [.width, .height]
         self.contentView = hostingView
@@ -119,7 +125,7 @@ public final class FloatingPillPanel: NSPanel {
         case .listening:
             return listeningWidth
         case .transcribing:
-            return 280
+            return 148
         case .success(let message), .notice(let message):
             let text = message.isEmpty ? "Transcribed" : message
             let textW = measureTextWidth(text)
@@ -145,7 +151,7 @@ public final class FloatingPillPanel: NSPanel {
         
         let screenRect = screen.visibleFrame
         let panelW = min(Self.targetWidth(for: state), screenRect.width)
-        let panelH: CGFloat = 52
+        let panelH = Self.pillHeight
         
         // Bottom-Center screen positioning: keep the 38pt pill 24px above the Dock/bottom edge
         let x = round(screenRect.midX - (panelW / 2))

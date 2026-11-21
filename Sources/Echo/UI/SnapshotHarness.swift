@@ -17,9 +17,19 @@ enum SnapshotHarness {
         let url = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 
-        let pillSize = CGSize(width: FloatingPillPanel.listeningWidth + 24, height: 62)
-        for (name, text) in [("pill", "Hello, hello."), ("pill-long", "We should ship the updated meeting notes after everyone has reviewed the final version.")] {
-            render(pill(preview: text), size: pillSize, to: url.appendingPathComponent(name + ".png"))
+        let pillStates: [(String, PillState)] = [
+            ("pill", .listening(audioLevel: 0.55, livePartial: "Hello, hello.", isLocked: true, elapsedSeconds: 74)),
+            ("pill-long", .listening(audioLevel: 0.55, livePartial: "We should ship the updated meeting notes after everyone has reviewed the final version.", isLocked: true, elapsedSeconds: 74)),
+            ("pill-finalizing", .transcribing)
+        ]
+        for (name, state) in pillStates {
+            let panel = FloatingPillPanel()
+            panel.show(state: state)
+            RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+            if let view = panel.contentView {
+                capture(view, to: url.appendingPathComponent(name + ".png"))
+            }
+            panel.orderOut(nil)
         }
         if CommandLine.arguments.contains("--pill-only") { return true }
 
@@ -103,22 +113,6 @@ enum SnapshotHarness {
         .frame(width: 840, height: 560)
     }
 
-    private static func pill(preview: String) -> some View {
-        ZStack {
-            desktop
-            FloatingPillView(
-                state: .listening(
-                    audioLevel: 0.55,
-                    livePartial: preview,
-                    isLocked: true,
-                    elapsedSeconds: 74
-                )
-            )
-            .padding(12)
-        }
-        .frame(width: FloatingPillPanel.listeningWidth + 24, height: 62)
-    }
-
     private static func render<V: View>(_ view: V, size: CGSize, to url: URL) {
         let hostingView = NSHostingView(rootView: view)
         hostingView.frame = NSRect(origin: .zero, size: size)
@@ -127,6 +121,10 @@ enum SnapshotHarness {
         RunLoop.main.run(until: Date().addingTimeInterval(0.6))
         hostingView.layoutSubtreeIfNeeded()
 
+        capture(hostingView, to: url)
+    }
+
+    private static func capture(_ hostingView: NSView, to url: URL) {
         guard let rep = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
             return
         }

@@ -114,7 +114,6 @@ public struct FloatingPillView: View {
                         .lineLimit(1)
                         .frame(width: 56, height: 24)
                         .background(Capsule().fill(EchoTheme.recordingRed))
-                        .shadow(color: EchoTheme.recordingRed.opacity(0.3), radius: 3, y: 1)
                     }
                     .buttonStyle(AtelierButtonStyle())
                     .help("Finish & transcribe (\(shortcuts[.pushToTalk].label))")
@@ -164,7 +163,8 @@ public struct FloatingPillView: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 38)
+        .frame(maxWidth: .infinity)
+        .frame(height: FloatingPillPanel.pillHeight)
         .glassmorphicPill()
     }
 }

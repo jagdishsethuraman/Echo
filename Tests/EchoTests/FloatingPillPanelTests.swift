@@ -18,7 +18,7 @@ struct FloatingPillPanelTests {
     
     @Test func targetWidthDefaultsForFixedStates() {
         #expect(FloatingPillPanel.targetWidth(for: .idle) == 240)
-        #expect(FloatingPillPanel.targetWidth(for: .transcribing) == 280)
+        #expect(FloatingPillPanel.targetWidth(for: .transcribing) == 148)
         #expect(FloatingPillPanel.targetWidth(for: .error(message: "Failed")) == 360)
     }
     
