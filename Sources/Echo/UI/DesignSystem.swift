@@ -206,31 +206,23 @@ public extension View {
 
 public struct GlassmorphicPillModifier: ViewModifier {
     public func body(content: Content) -> some View {
+        let capsule = Capsule()
         content
             .background {
-                Capsule(style: .continuous)
-                    .fill(.ultraThinMaterial)
+                capsule.fill(
+                    LinearGradient(colors: [EchoTheme.windowBackground, EchoTheme.windowTint],
+                                   startPoint: .top, endPoint: .bottom)
+                )
             }
-            .background {
-                Capsule(style: .continuous)
-                    .fill(EchoTheme.windowTint.opacity(0.62))
-            }
+            .clipShape(capsule)
             .overlay {
-                Capsule(style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.26),
-                                Color.white.opacity(0.08),
-                                EchoTheme.accent.opacity(0.16)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
-                    )
+                capsule.strokeBorder(
+                    LinearGradient(colors: [EchoTheme.highlight, EchoTheme.borderLight],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
             }
-            .shadow(color: Color.black.opacity(0.40), radius: 12, x: 0, y: 5)
     }
 }
 
