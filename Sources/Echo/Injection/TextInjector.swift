@@ -39,71 +39,108 @@ extension NSPasteboard: PasteboardProtocol, @unchecked @retroactive Sendable {
     }
 }
 
+public enum UnicodeTypingResult: Equatable, Sendable {
+    case posted
+    case partial(remainingText: String)
+    case notPosted
+}
+
 public protocol EventPosterProtocol: AnyObject, Sendable {
-    func postCmdV() -> Bool
-    func typeUnicodeString(_ string: String) -> Bool
+    func postCmdV(targetPID: pid_t?, ifFocused: () -> Bool) -> Bool
+    func typeUnicodeString(_ string: String, targetPID: pid_t?, ifFocused: () -> Bool) -> UnicodeTypingResult
 }
 
 public final class SystemEventPoster: EventPosterProtocol, @unchecked Sendable {
     public init() {}
-    
-    /// Type characters directly into the active text field with smooth typing cadency
-    public func typeUnicodeString(_ string: String) -> Bool {
+
+    /// Reports the unposted suffix at a whole-character boundary.
+    public func typeUnicodeString(_ string: String, targetPID: pid_t?, ifFocused: () -> Bool) -> UnicodeTypingResult {
         guard let source = CGEventSource(stateID: .combinedSessionState) ?? CGEventSource(stateID: .hidSystemState) else {
-            return false
+            return .notPosted
         }
-        
-        usleep(20_000) // 20ms settle delay
-        
-        for character in string {
-            var units = Array(character.utf16)
+
+        usleep(20_000) // Allow the physical hotkey release to reach WindowServer.
+        return Self.postCharacters(in: string) { units in
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
-                return false
+                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false),
+                  ifFocused() else { return false }
+
+            units.withUnsafeBufferPointer { buffer in
+                keyDown.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+                keyUp.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
             }
-            
-            keyDown.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-            keyUp.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-            
-            // Clear any lingering modifier flags (Control/Option/Shift)
             keyDown.flags = []
             keyUp.flags = []
-            
-            // Post directly to session event tap
-            keyDown.post(tap: .cgSessionEventTap)
-            keyUp.post(tap: .cgSessionEventTap)
-            
-            // 1.5ms cadency for fast yet reliable typing
-            usleep(1500)
+            post(keyDown, targetPID: targetPID)
+            post(keyUp, targetPID: targetPID)
+            usleep(1_500)
+            return true
         }
-        return true
     }
-    
-    /// Synthesize Cmd+V paste keystroke
-    public func postCmdV() -> Bool {
+
+    static func postCharacters(in string: String, post: ([UInt16]) -> Bool) -> UnicodeTypingResult {
+        for index in string.indices {
+            guard post(Array(string[index].utf16)) else {
+                return index == string.startIndex ? .notPosted : .partial(remainingText: String(string[index...]))
+            }
+        }
+        return .posted
+    }
+
+    /// A posted shortcut provides no acknowledgment from the destination.
+    public func postCmdV(targetPID: pid_t?, ifFocused: () -> Bool) -> Bool {
         let kVK_ANSI_V: CGKeyCode = 0x09
-        
         guard let source = CGEventSource(stateID: .combinedSessionState) ?? CGEventSource(stateID: .hidSystemState) else {
             return false
         }
-        
-        // 25ms settle delay to ensure physical hotkey release is cleared by WindowServer
-        usleep(25_000)
-        
+
+        usleep(25_000) // Allow the physical hotkey release to reach WindowServer.
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: kVK_ANSI_V, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: kVK_ANSI_V, keyDown: false) else {
-            return false
-        }
-        
-        // Isolate to Command flag only (scrubbing physical Control/Option key state)
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: kVK_ANSI_V, keyDown: false),
+              ifFocused() else { return false }
+
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        
-        keyDown.post(tap: .cgSessionEventTap)
-        usleep(25_000) // 25ms hold delay
-        keyUp.post(tap: .cgSessionEventTap)
-        
+        post(keyDown, targetPID: targetPID)
+        usleep(25_000)
+        post(keyUp, targetPID: targetPID)
         return true
+    }
+
+    private func post(_ event: CGEvent, targetPID: pid_t?) {
+        if let targetPID {
+            event.postToPid(targetPID)
+        } else {
+            event.post(tap: .cgSessionEventTap)
+        }
+    }
+}
+
+/// AX object equality distinguishes separate fields in the same application.
+struct FocusedDictationField: Equatable {
+    let pid: pid_t
+    let element: AXUIElement
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.pid == rhs.pid && CFEqual(lhs.element, rhs.element)
+    }
+
+    @MainActor static func current() -> Self? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let element = TextInjector.accessibilityFocusedElement(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
+            return nil
+        }
+
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else { return nil }
+
+        // An AX web area or window may represent several otherwise unidentified fields.
+        var role: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
+              let role = role as? String,
+              [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(role) else { return nil }
+        return Self(pid: pid, element: element)
     }
 }
 
@@ -188,14 +225,16 @@ public final class MockEventPoster: EventPosterProtocol, @unchecked Sendable {
     
     public init() {}
     
-    public func postCmdV() -> Bool {
+    public func postCmdV(targetPID: pid_t?, ifFocused: () -> Bool) -> Bool {
+        guard ifFocused() else { return false }
         postedCount += 1
         return true
     }
     
-    public func typeUnicodeString(_ string: String) -> Bool {
+    public func typeUnicodeString(_ string: String, targetPID: pid_t?, ifFocused: () -> Bool) -> UnicodeTypingResult {
+        guard ifFocused() else { return .notPosted }
         typedCount += string.count
-        return true
+        return .posted
     }
 }
 
@@ -232,7 +271,33 @@ public enum InjectionMethod: String, Sendable {
     case accessibilityDirect = "AXDirect"
     case directTyping = "DirectTyping"
     case syntheticPaste = "CmdVPaste"
+    case partialTyping = "PartialTyping"
     case clipboardOnly = "ClipboardOnly"
+}
+
+public struct InjectionResult: Sendable {
+    public let method: InjectionMethod
+    public let clipboardReady: Bool
+    public let remainingText: String?
+    public let focusChanged: Bool
+
+    /// An AX write is the only path that acknowledges insertion.
+    public var insertionConfirmed: Bool { method == .accessibilityDirect }
+
+    /// Indicates that an action was taken or recovery text is available.
+    public var success: Bool { method != .clipboardOnly || clipboardReady }
+
+    fileprivate init(
+        _ method: InjectionMethod,
+        clipboardReady: Bool = false,
+        remainingText: String? = nil,
+        focusChanged: Bool = false
+    ) {
+        self.method = method
+        self.clipboardReady = clipboardReady
+        self.remainingText = remainingText
+        self.focusChanged = focusChanged
+    }
 }
 
 public final class TextInjector: @unchecked Sendable {
@@ -240,6 +305,13 @@ public final class TextInjector: @unchecked Sendable {
     private let eventPoster: EventPosterProtocol
     private let isAccessibilityTrusted: () -> Bool
     private let accessibilityInjector: ((String) -> Bool)?
+
+    private struct ClipboardLease {
+        let originalItems: [NSPasteboardItem]?
+        let changeCount: Int
+    }
+
+    @MainActor private var pendingPaste: Task<Void, Never>?
     
     public init(
         pasteboard: PasteboardProtocol = NSPasteboard.general,
@@ -331,134 +403,176 @@ public final class TextInjector: @unchecked Sendable {
         return processed
     }
     
-    /// Direct injection via macOS Accessibility API (instant value insertion)
-    public func tryDirectAccessibilityInjection(text: String) -> Bool {
-        guard isAccessibilityTrusted() else { return false }
-        
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedElementValue: AnyObject?
+    static func accessibilityFocusedElement() -> AXUIElement? {
+        var value: AnyObject?
         let result = AXUIElementCopyAttributeValue(
-            systemWide,
+            AXUIElementCreateSystemWide(),
             kAXFocusedUIElementAttribute as CFString,
-            &focusedElementValue
+            &value
         )
-        
-        guard result == .success,
-              let focusedElement = focusedElementValue,
-              CFGetTypeID(focusedElement) == AXUIElementGetTypeID() else {
-            return false
+        guard result == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            return nil
         }
-        
-        let element = focusedElement as! AXUIElement
-        
-        // Try selected text replacement first
+        return (value as! AXUIElement)
+    }
+
+    /// Direct injection via macOS Accessibility API (instant value insertion).
+    public func tryDirectAccessibilityInjection(text: String) -> Bool {
+        guard isAccessibilityTrusted(), let element = Self.accessibilityFocusedElement() else { return false }
+        return insertSelectedText(text, in: element)
+    }
+
+    private func insertSelectedText(_ text: String, in element: AXUIElement, ifFocused: () -> Bool = { true }) -> Bool {
         var isSettable: DarwinBoolean = false
-        if AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &isSettable) == .success, isSettable.boolValue {
-            let setResult = AXUIElementSetAttributeValue(
-                element,
-                kAXSelectedTextAttribute as CFString,
-                text as CFTypeRef
-            )
-            if setResult == .success {
-                return true
-            }
-        }
-        
-        return false
+        let attribute = kAXSelectedTextAttribute as CFString
+        guard AXUIElementIsAttributeSettable(element, attribute, &isSettable) == .success,
+              isSettable.boolValue, ifFocused() else { return false }
+        return AXUIElementSetAttributeValue(element, attribute, text as CFTypeRef) == .success
     }
-    
-    /// Master injection pipeline: AX direct first (no clipboard interaction),
-    /// then Paste/Type fallbacks using the clipboard, restoring the user's
-    /// previous clipboard contents (INJ-03) after a successful fallback.
-    @discardableResult
-    public func inject(text: String, options: InjectionOptions = InjectionOptions()) async -> (success: Bool, method: InjectionMethod) {
+
+    @MainActor @discardableResult
+    public func inject(text: String, options: InjectionOptions = InjectionOptions()) async -> InjectionResult {
+        await inject(text: text, options: options, target: nil)
+    }
+
+    @MainActor
+    func injectDictation(
+        text: String,
+        target: FocusedDictationField?,
+        stillOwnsDelivery: () -> Bool = { true },
+        currentField: (() -> FocusedDictationField?)? = nil
+    ) async -> InjectionResult {
+        await inject(text: text, options: InjectionOptions(), target: target, stillOwnsDelivery: stillOwnsDelivery) {
+            guard let target else { return false }
+            if let currentField { return target == currentField() }
+            return target == FocusedDictationField.current()
+        }
+    }
+
+    @MainActor
+    private func inject(
+        text: String,
+        options: InjectionOptions,
+        target: FocusedDictationField?,
+        stillOwnsDelivery: () -> Bool = { true },
+        ifFocused: () -> Bool = { true }
+    ) async -> InjectionResult {
+        // Another target may still be reading Echo's previous paste request.
+        while let pendingPaste { await pendingPaste.value }
+        guard stillOwnsDelivery() else { return InjectionResult(.clipboardOnly) }
+
         let prepared = prepareText(text, options: options)
-        guard !prepared.isEmpty else { return (false, .clipboardOnly) }
-        
-        // 1. Path 1: AX Direct attribute injection. This never needs the
-        // clipboard, so a successful AX insertion leaves it untouched.
-        if performAccessibilityInjection(text: prepared) {
-            return (true, .accessibilityDirect)
+        guard !prepared.isEmpty else { return InjectionResult(.clipboardOnly) }
+        guard ifFocused() else {
+            return InjectionResult(.clipboardOnly, clipboardReady: writeToClipboard(prepared) != nil, focusChanged: true)
         }
-        
-        // 2. Snapshot the clipboard only now that a clipboard-based fallback
-        // is actually required. `nil` here means the clipboard was empty.
-        let snapshot = options.restorePreviousClipboard ? pasteboard.snapshotItems() : nil
 
-        // 3. Put the prepared transcript on the clipboard for the fallbacks.
-        let expectedChangeCount = writeToClipboard(prepared)
+        let inserted: Bool
+        if let accessibilityInjector {
+            inserted = accessibilityInjector(prepared)
+        } else if let target {
+            inserted = insertSelectedText(prepared, in: target.element, ifFocused: ifFocused)
+        } else {
+            inserted = tryDirectAccessibilityInjection(text: prepared)
+        }
+        if inserted { return InjectionResult(.accessibilityDirect) }
 
-        // 4. Follow the configured cascade order.
-        switch options.order {
-        case .axDirectThenPasteThenTyping:
-            // Synthetic Cmd+V paste first (fast, universal, reliable).
-            if eventPoster.postCmdV() {
-                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: true)
-                return (true, .syntheticPaste)
+        let pasteFirst = options.order == .axDirectThenPasteThenTyping
+        var attemptedPaste: ClipboardLease?
+        if pasteFirst {
+            let attempt = beginPaste(prepared, target: target, restore: options.restorePreviousClipboard, ifFocused: ifFocused)
+            if attempt.posted {
+                return await completePaste(attempt.lease, restore: options.restorePreviousClipboard)
             }
-            
-            // Fallback to direct typing if enabled and text is reasonably short.
-            if options.useDirectTyping && prepared.count < 300,
-               eventPoster.typeUnicodeString(prepared) {
-                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: false)
-                return (true, .directTyping)
-            }
-            
-        case .axDirectThenTypingThenPaste:
-            // Direct typing first if enabled and text is reasonably short.
-            if options.useDirectTyping && prepared.count < 300,
-               eventPoster.typeUnicodeString(prepared) {
-                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: false)
-                return (true, .directTyping)
-            }
-            
-            // Fallback to Cmd+V paste.
-            if eventPoster.postCmdV() {
-                restoreClipboard(snapshot, expectedChangeCount: expectedChangeCount, enabled: options.restorePreviousClipboard, afterPaste: true)
-                return (true, .syntheticPaste)
+            attemptedPaste = attempt.lease
+        }
+
+        if options.useDirectTyping && prepared.count < 300 && ifFocused() {
+            switch eventPoster.typeUnicodeString(prepared, targetPID: target?.pid, ifFocused: ifFocused) {
+            case .posted:
+                if options.restorePreviousClipboard {
+                    restoreClipboard(attemptedPaste)
+                } else if attemptedPaste == nil {
+                    _ = writeToClipboard(prepared)
+                }
+                return InjectionResult(.directTyping)
+            case .partial(let remaining):
+                // Retrying the original text would duplicate the posted prefix.
+                let canCopy = attemptedPaste.map { pasteboard.changeCount == $0.changeCount } ?? true
+                return InjectionResult(
+                    .partialTyping,
+                    clipboardReady: canCopy && writeToClipboard(remaining) != nil,
+                    remainingText: remaining,
+                    focusChanged: !ifFocused()
+                )
+            case .notPosted:
+                break
             }
         }
-        
-        // 5. Every synthetic path failed: leave the transcript on the clipboard
-        // so the user can still paste it manually. The previous contents are
-        // intentionally not restored, otherwise the fallback text would vanish.
-        return (true, .clipboardOnly)
+
+        if !pasteFirst {
+            let attempt = beginPaste(prepared, target: target, restore: options.restorePreviousClipboard, ifFocused: ifFocused)
+            if attempt.posted {
+                return await completePaste(attempt.lease, restore: options.restorePreviousClipboard)
+            }
+            attemptedPaste = attempt.lease
+        }
+
+        let copied: Bool
+        if let attemptedPaste {
+            copied = pasteboard.changeCount == attemptedPaste.changeCount
+        } else {
+            copied = writeToClipboard(prepared) != nil
+        }
+        return InjectionResult(.clipboardOnly, clipboardReady: copied, focusChanged: !ifFocused())
     }
 
-    /// Runs the accessibility injector seam if one was supplied (tests), or the
-    /// real AX attribute injection otherwise.
-    private func performAccessibilityInjection(text: String) -> Bool {
-        if let accessibilityInjector {
-            return accessibilityInjector(text)
+    @MainActor
+    private func beginPaste(
+        _ text: String,
+        target: FocusedDictationField?,
+        restore: Bool,
+        ifFocused: () -> Bool
+    ) -> (posted: Bool, lease: ClipboardLease?) {
+        let originalItems = restore ? pasteboard.snapshotItems() : nil
+        guard let changeCount = writeToClipboard(text) else { return (false, nil) }
+        let lease = ClipboardLease(originalItems: originalItems, changeCount: changeCount)
+        guard ifFocused() else { return (false, lease) }
+        let posted = eventPoster.postCmdV(targetPID: target?.pid) {
+            ifFocused() && self.pasteboard.changeCount == changeCount
         }
-        return tryDirectAccessibilityInjection(text: text)
+        return (posted, lease)
+    }
+
+    @MainActor
+    private func completePaste(_ lease: ClipboardLease?, restore: Bool) async -> InjectionResult {
+        // Keep the temporary contents available for slow targets. The system
+        // offers no acknowledgment that the target consumed the pasteboard.
+        let transfer = Task { @MainActor [self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            if restore { restoreClipboard(lease) }
+            pendingPaste = nil
+        }
+        pendingPaste = transfer
+        await transfer.value
+        return InjectionResult(
+            .syntheticPaste,
+            clipboardReady: lease?.changeCount == pasteboard.changeCount
+        )
     }
 
     @discardableResult
-    public func writeToClipboard(_ text: String) -> Int {
+    public func writeToClipboard(_ text: String) -> Int? {
         _ = pasteboard.clearContents()
         _ = pasteboard.declareTypes([.string], owner: nil)
-        _ = pasteboard.setString(text, forType: .string)
+        guard pasteboard.setString(text, forType: .string) else { return nil }
         return pasteboard.changeCount
     }
 
-    /// Restores the snapshot taken before the clipboard was overwritten. When
-    /// restoration is disabled the transcript is left in place. A `nil`
-    /// snapshot means the clipboard was empty, so it is cleared again.
-    /// If the pasteboard's `changeCount` has changed since the fallback was
-    /// written, another process or user copied newer content; in that case,
-    /// we do not clobber the user's newer clipboard state.
-    private func restoreClipboard(_ snapshot: [NSPasteboardItem]?, expectedChangeCount: Int, enabled: Bool, afterPaste: Bool) {
-        guard enabled else { return }
-        if afterPaste {
-            // Give the target app time to read the pasteboard before restoring.
-            usleep(60_000)
-        }
-        guard pasteboard.changeCount == expectedChangeCount else {
-            return
-        }
-        if let snapshot {
-            _ = pasteboard.restoreItems(snapshot)
+    private func restoreClipboard(_ lease: ClipboardLease?) {
+        guard let lease, pasteboard.changeCount == lease.changeCount else { return }
+        if let items = lease.originalItems {
+            _ = pasteboard.restoreItems(items)
         } else {
             _ = pasteboard.clearContents()
         }

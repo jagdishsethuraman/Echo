@@ -7,6 +7,7 @@ public final class DatabaseManager: @unchecked Sendable {
     public struct StartupError: LocalizedError, Sendable {
         public let path: String
         public let message: String
+        fileprivate var storageUnavailable = false
         public var errorDescription: String? { message }
     }
 
@@ -23,18 +24,28 @@ public final class DatabaseManager: @unchecked Sendable {
     }
 
     /// The database is unavailable when opening, migration, or validation fails.
-    public private(set) var startupError: StartupError?
+    public var startupError: StartupError? { lock.withLock { _startupError } }
+    private var _startupError: StartupError?
     
     private var db: OpaquePointer?
     private let lock = NSLock()
     private var dbPath: String
-    private var _isUsingFallback: Bool = false
+    private let primaryPath: String
+    private let fallbackPath: String?
+    private var _isUsingFallback = false
+    private var _isUsingTemporary = false
     private let dbQueue = DispatchQueue(label: "com.echo.database", qos: .utility)
     
     public var isUsingFallbackStorage: Bool {
         lock.lock()
         defer { lock.unlock() }
         return _isUsingFallback
+    }
+
+    public var isUsingTemporaryStorage: Bool { lock.withLock { _isUsingTemporary } }
+
+    public var canUseTemporaryStorage: Bool {
+        lock.withLock { fallbackPath != nil && _startupError?.storageUnavailable == true }
     }
 
     public var activeDatabasePath: String {
@@ -72,7 +83,7 @@ public final class DatabaseManager: @unchecked Sendable {
     /// Single place for surfacing SQLite failures: log once and notify the
     /// optional UI handler without touching any database state under `lock`.
     private func reportError(_ context: String) {
-        guard startupError == nil else { return }
+        guard _startupError == nil else { return }
         let message = String(cString: sqlite3_errmsg(db))
         print("Echo DatabaseManager: \(context): \(message)")
         if let handler = onError {
@@ -82,28 +93,92 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
 
-    public init(customPath: String? = nil) {
-        if let path = customPath {
-            self.dbPath = path
+    public convenience init(customPath: String? = nil) {
+        if let customPath {
+            self.init(durablePath: customPath, fallbackPath: nil)
         } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let echoDir = appSupport.appendingPathComponent("Echo", isDirectory: true)
-            try? FileManager.default.createDirectory(at: echoDir, withIntermediateDirectories: true)
-            self.dbPath = echoDir.appendingPathComponent("echo.sqlite").path
-        }
-        
-        do {
-            try openDatabase(allowFallback: customPath == nil)
-            try configurePragmas()
-            try applyMigrations()
-        } catch {
-            let failure = (error as? StartupError) ?? StartupError(path: dbPath, message: error.localizedDescription)
-            startupError = failure
-            print("Echo DatabaseManager: \(failure.message) (\(failure.path))")
-            closeDatabase()
+            let primaryDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Echo", isDirectory: true)
+            let fallbackDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".echo", isDirectory: true)
+            self.init(
+                durablePath: primaryDirectory.appendingPathComponent("echo.sqlite").path,
+                fallbackPath: fallbackDirectory.appendingPathComponent("echo.sqlite").path
+            )
         }
     }
-    
+
+    init(durablePath: String, fallbackPath: String?) {
+        self.primaryPath = durablePath
+        self.fallbackPath = fallbackPath
+        self.dbPath = durablePath
+        _ = retryDurableStorage()
+    }
+
+    /// Retry before starting app services. The durable locations are tried in preference order.
+    @discardableResult
+    public func retryDurableStorage() -> Bool {
+        lock.withLock {
+            if db != nil { return !_isUsingTemporary }
+
+            let candidates = [primaryPath] + (fallbackPath.map { [$0] } ?? [])
+            for path in candidates {
+                if fallbackPath != nil {
+                    let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+                    try? FileManager.default.createDirectory(
+                        at: directory,
+                        withIntermediateDirectories: true,
+                        attributes: [.posixPermissions: 0o700]
+                    )
+                }
+
+                if initializeStorage(at: path) {
+                    _isUsingFallback = path != primaryPath
+                    return true
+                }
+                guard _startupError?.storageUnavailable == true else { break }
+            }
+            return false
+        }
+    }
+
+    /// Start a fresh, process-local library only after choosing temporary storage.
+    @discardableResult
+    public func useTemporaryStorage() -> Bool {
+        lock.withLock {
+            guard db == nil, fallbackPath != nil, _startupError?.storageUnavailable == true else {
+                return false
+            }
+            guard initializeStorage(at: ":memory:") else { return false }
+            _isUsingFallback = true
+            _isUsingTemporary = true
+            return true
+        }
+    }
+
+    private func initializeStorage(at path: String) -> Bool {
+        dbPath = path
+        do {
+            guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK else {
+                throw sqliteStartupError("Could not open the database")
+            }
+            try configurePragmas()
+            if path == ":memory:" {
+                try executeStartupSQL("PRAGMA temp_store = MEMORY;", context: "Could not configure temporary storage")
+            }
+            try applyMigrations()
+            try executeStartupSQL("BEGIN IMMEDIATE; ROLLBACK;", context: "Could not write to the database")
+            _startupError = nil
+            return true
+        } catch {
+            let failure = (error as? StartupError) ?? StartupError(path: path, message: error.localizedDescription)
+            _startupError = failure
+            print("Echo DatabaseManager: \(failure.message) (\(failure.path))")
+            closeDatabase()
+            return false
+        }
+    }
+
     deinit {
         lock.lock()
         defer { lock.unlock() }
@@ -121,39 +196,6 @@ public final class DatabaseManager: @unchecked Sendable {
             """, context: "Could not configure the database")
     }
     
-    private func openDatabase(allowFallback: Bool) throws {
-        if sqlite3_open(dbPath, &db) == SQLITE_OK { return }
-
-        let openError = sqliteStartupError("Could not open the database")
-        closeDatabase()
-        guard allowFallback else { throw openError }
-
-        // Sandbox-safe fallback to a per-user directory that does not depend on
-        // where the source tree happens to live.
-        let fallbackDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".echo", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: fallbackDirectory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let fallbackPath = fallbackDirectory.appendingPathComponent("echo.sqlite").path
-        
-        if sqlite3_open(fallbackPath, &db) == SQLITE_OK {
-            dbPath = fallbackPath
-            _isUsingFallback = true
-            print("Echo DatabaseManager: Initialized at fallback: \(fallbackPath)")
-            return
-        }
-        closeDatabase()
-
-        let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("echo.sqlite").path
-        guard sqlite3_open(tempPath, &db) == SQLITE_OK else { throw openError }
-        dbPath = tempPath
-        _isUsingFallback = true
-        print("Echo DatabaseManager: Initialized at temp fallback: \(tempPath)")
-    }
-
     private func closeDatabase() {
         if let db {
             sqlite3_close(db)
@@ -178,7 +220,12 @@ public final class DatabaseManager: @unchecked Sendable {
     }
 
     private func sqliteStartupError(_ context: String) -> StartupError {
-        StartupError(path: dbPath, message: "\(context): \(String(cString: sqlite3_errmsg(db)))")
+        let code = sqlite3_errcode(db)
+        return StartupError(
+            path: dbPath,
+            message: "\(context): \(String(cString: sqlite3_errmsg(db)))",
+            storageUnavailable: [SQLITE_CANTOPEN, SQLITE_READONLY, SQLITE_PERM, SQLITE_FULL].contains(code)
+        )
     }
 
     private func executeStartupSQL(_ sql: String, context: String) throws {
@@ -218,6 +265,9 @@ public final class DatabaseManager: @unchecked Sendable {
 
     private func applyMigrations() throws {
         let version = try readUserVersion()
+        guard version <= 4 else {
+            throw StartupError(path: dbPath, message: "Database schema v\(version) requires a newer version of Echo.")
+        }
         if version < 1 {
             let schemaSQL = """
             CREATE TABLE IF NOT EXISTS sessions (
@@ -315,19 +365,22 @@ public final class DatabaseManager: @unchecked Sendable {
     
     // MARK: - Sessions & Utterances
     
-    private func saveSessionLocked(_ session: MeetingSession) throws {
+    private func saveSessionLocked(_ session: MeetingSession, preservingExisting: Bool = false) throws {
         guard let db else {
             throw DatabaseError.unavailable("Database pointer is nil")
         }
+        let onConflict = preservingExisting ? "DO NOTHING" : """
+        DO UPDATE SET
+            title = excluded.title,
+            end_time = excluded.end_time,
+            summary_markdown = excluded.summary_markdown
+        """
         let sql = """
         INSERT INTO sessions (id, title, start_time, end_time, summary_markdown, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title,
-            end_time = excluded.end_time,
-            summary_markdown = excluded.summary_markdown;
+        ON CONFLICT(id) \(onConflict);
         """
-        
+
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -388,23 +441,17 @@ public final class DatabaseManager: @unchecked Sendable {
         }
     }
 
-    public func saveSession(_ session: MeetingSession) {
-        lock.lock()
-        defer { lock.unlock() }
-        do {
-            try saveSessionLocked(session)
-        } catch {
-            reportError("saveSession")
+    @discardableResult
+    public func saveSession(_ session: MeetingSession) -> Result<Void, Error> {
+        lock.withLock {
+            Result { try saveSessionLocked(session) }
         }
     }
-    
-    public func saveUtterance(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) {
-        lock.lock()
-        defer { lock.unlock() }
-        do {
-            try saveUtteranceLocked(segment, sessionId: sessionId, isDictation: isDictation)
-        } catch {
-            reportError("saveUtterance")
+
+    @discardableResult
+    public func saveUtterance(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) -> Result<Void, Error> {
+        lock.withLock {
+            Result { try saveUtteranceLocked(segment, sessionId: sessionId, isDictation: isDictation) }
         }
     }
 
@@ -423,12 +470,11 @@ public final class DatabaseManager: @unchecked Sendable {
 
         guard sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION;", nil, nil, nil) == SQLITE_OK else {
             let msg = String(cString: sqlite3_errmsg(db))
-            reportError("saveSessionAndUtterance BEGIN")
             throw DatabaseError.executionFailed("BEGIN TRANSACTION failed: \(msg)")
         }
 
         do {
-            try saveSessionLocked(session)
+            try saveSessionLocked(session, preservingExisting: true)
             try saveUtteranceLocked(segment, sessionId: session.id, isDictation: isDictation)
             guard sqlite3_exec(db, "COMMIT;", nil, nil, nil) == SQLITE_OK else {
                 let msg = String(cString: sqlite3_errmsg(db))
@@ -438,24 +484,17 @@ public final class DatabaseManager: @unchecked Sendable {
             if sqlite3_get_autocommit(db) == 0 {
                 sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
             }
-            reportError("saveSessionAndUtterance")
             throw error
         }
     }
     
-    public func deleteSession(id: UUID) {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        let sql = "DELETE FROM sessions WHERE id = ?;"
-        var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            bindText(stmt, 1, id.uuidString)
-            if sqlite3_step(stmt) != SQLITE_DONE {
-                reportError("deleteSession")
-            }
+    @discardableResult
+    public func deleteSession(id: UUID) throws -> Bool {
+        try lock.withLock {
+            try deleteRowsLocked("DELETE FROM sessions WHERE id = ?;") { statement in
+                bindText(statement, 1, id.uuidString)
+            } > 0
         }
-        sqlite3_finalize(stmt)
     }
 
     // MARK: - Action Items
@@ -514,13 +553,16 @@ public final class DatabaseManager: @unchecked Sendable {
         return results
     }
 
-    public func saveActionItem(_ item: ActionItemState, sessionId: UUID) {
+    @discardableResult
+    public func saveActionItem(_ item: ActionItemState, sessionId: UUID) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         do {
             try saveActionItemLocked(item, sessionId: sessionId)
+            return true
         } catch {
             reportError("saveActionItem")
+            return false
         }
     }
 
@@ -621,7 +663,7 @@ public final class DatabaseManager: @unchecked Sendable {
     ///     process are junk too; pass `false` to keep an in-progress session.
     ///   - keeping: session to protect even when it has no utterances yet.
     @discardableResult
-    public func deleteEmptySessions(includingOpen: Bool = true, keeping: UUID? = nil) -> Int {
+    public func deleteEmptySessions(includingOpen: Bool = true, keeping: UUID? = nil) throws -> Int {
         lock.lock()
         defer { lock.unlock() }
 
@@ -638,35 +680,36 @@ public final class DatabaseManager: @unchecked Sendable {
         );
         """
 
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            reportError("deleteEmptySessions prepare")
-            sqlite3_finalize(stmt)
-            return 0
+        return try deleteRowsLocked(sql) { statement in
+            if let keeping {
+                bindText(statement, 1, keeping.uuidString)
+            }
         }
-        if let keeping {
-            bindText(stmt, 1, keeping.uuidString)
-        }
-        let rc = sqlite3_step(stmt)
-        sqlite3_finalize(stmt)
-        guard rc == SQLITE_DONE else {
-            reportError("deleteEmptySessions")
-            return 0
-        }
-        return Int(sqlite3_changes(db))
     }
 
-    /// Standalone dictation retention: remove all utterances not tied to a meeting session.
+    /// Delete standalone dictations, optionally preserving those at or after the cutoff.
     @discardableResult
-    public func deleteStandaloneDictations() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
+    public func deleteStandaloneDictations(olderThan cutoff: Date? = nil) throws -> Int {
+        try lock.withLock {
+            let condition = cutoff == nil ? "" : " AND timestamp < ?"
+            return try deleteRowsLocked("DELETE FROM utterances WHERE session_id IS NULL AND is_dictation = 1\(condition);") { statement in
+                if let cutoff {
+                    sqlite3_bind_double(statement, 1, cutoff.timeIntervalSince1970)
+                }
+            }
+        }
+    }
 
-        guard let db else { return 0 }
-        let sql = "DELETE FROM utterances WHERE session_id IS NULL;"
-        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
-            reportError("deleteStandaloneDictations")
-            return 0
+    private func deleteRowsLocked(_ sql: String, bind: (OpaquePointer?) -> Void) throws -> Int {
+        guard let db else { throw DatabaseError.unavailable("Database connection is closed") }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw DatabaseError.executionFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        bind(statement)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DatabaseError.executionFailed(String(cString: sqlite3_errmsg(db)))
         }
         return Int(sqlite3_changes(db))
     }
@@ -685,24 +728,22 @@ public final class DatabaseManager: @unchecked Sendable {
     
     // MARK: - Asynchronous Background Wrappers
     
-    public func saveSessionAsync(_ session: MeetingSession) async {
+    @discardableResult
+    public func saveSessionAsync(_ session: MeetingSession) async -> Result<Void, Error> {
+        await withCheckedContinuation { continuation in
+            dbQueue.async { continuation.resume(returning: self.saveSession(session)) }
+        }
+    }
+
+    @discardableResult
+    public func saveUtteranceAsync(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) async -> Result<Void, Error> {
         await withCheckedContinuation { continuation in
             dbQueue.async {
-                self.saveSession(session)
-                continuation.resume()
+                continuation.resume(returning: self.saveUtterance(segment, sessionId: sessionId, isDictation: isDictation))
             }
         }
     }
-    
-    public func saveUtteranceAsync(_ segment: TranscriptSegment, sessionId: UUID? = nil, isDictation: Bool = false) async {
-        await withCheckedContinuation { continuation in
-            dbQueue.async {
-                self.saveUtterance(segment, sessionId: sessionId, isDictation: isDictation)
-                continuation.resume()
-            }
-        }
-    }
-    
+
     /// Persist session metadata and utterance atomically in a single SQLite transaction.
     @discardableResult
     public func saveSessionAndUtteranceAsync(
@@ -723,37 +764,34 @@ public final class DatabaseManager: @unchecked Sendable {
     }
 
     @discardableResult
-    public func deleteStandaloneDictationsAsync() async -> Int {
-        await withCheckedContinuation { continuation in
-            dbQueue.async {
-                let removed = self.deleteStandaloneDictations()
-                if removed > 0 {
-                    self.checkpointWAL()
-                }
-                continuation.resume(returning: removed)
-            }
+    public func deleteStandaloneDictationsAsync(olderThan cutoff: Date? = nil) async throws -> Int {
+        try await deleteOnDatabaseQueue {
+            try self.deleteStandaloneDictations(olderThan: cutoff)
         }
     }
 
-    public func deleteSessionAsync(id: UUID) async {
-        await withCheckedContinuation { continuation in
-            dbQueue.async {
-                self.deleteSession(id: id)
-                continuation.resume()
-            }
-        }
+    public func deleteSessionAsync(id: UUID) async throws -> Bool {
+        try await deleteOnDatabaseQueue {
+            try self.deleteSession(id: id) ? 1 : 0
+        } > 0
     }
 
     /// Prune empty sessions and compact the WAL in one background hop.
     @discardableResult
-    public func deleteEmptySessionsAsync(includingOpen: Bool = true, keeping: UUID? = nil) async -> Int {
-        await withCheckedContinuation { continuation in
+    public func deleteEmptySessionsAsync(includingOpen: Bool = true, keeping: UUID? = nil) async throws -> Int {
+        try await deleteOnDatabaseQueue {
+            try self.deleteEmptySessions(includingOpen: includingOpen, keeping: keeping)
+        }
+    }
+
+    private func deleteOnDatabaseQueue(_ delete: @escaping () throws -> Int) async throws -> Int {
+        try await withCheckedThrowingContinuation { continuation in
             dbQueue.async {
-                let removed = self.deleteEmptySessions(includingOpen: includingOpen, keeping: keeping)
-                if removed > 0 {
-                    self.checkpointWAL()
-                }
-                continuation.resume(returning: removed)
+                continuation.resume(with: Result {
+                    let removed = try delete()
+                    if removed > 0 { self.checkpointWAL() }
+                    return removed
+                })
             }
         }
     }

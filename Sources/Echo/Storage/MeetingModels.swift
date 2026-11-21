@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public struct ActionItemState: Identifiable, Codable, Sendable, Equatable {
     public let id: UUID
@@ -76,11 +77,39 @@ public struct MeetingSession: Identifiable, Codable, Sendable {
         self.actionItems = try container.decodeIfPresent([ActionItemState].self, forKey: .actionItems) ?? []
     }
     
+    /// Persisted edits take precedence over inferred tasks, including pre-upgrade UUIDs.
+    func resolvedActionItems(saved: [ActionItemState], inferred: [String]) -> [ActionItemState] {
+        var result = saved
+        var seen = Set(saved.map { $0.text.lowercased() })
+        for text in inferred where seen.insert(text.lowercased()).inserted {
+            // Unsaved inferred items keep their SwiftUI identity across relaunches.
+            let digest = SHA256.hash(data: Data((id.uuidString + text.lowercased()).utf8))
+            let uuid = digest.withUnsafeBytes { $0.loadUnaligned(as: uuid_t.self) }
+            result.append(ActionItemState(id: UUID(uuid: uuid), text: text))
+        }
+        return result
+    }
+
+    /// Resolve saved checkbox edits for every export surface before formatting off the UI actor.
+    func markdown(using database: DatabaseManager, includeTranscript: Bool = true) async -> String {
+        let persisted = await database.fetchActionItemsAsync(sessionId: id)
+        return await Task.detached {
+            notesDocument(savedItems: persisted.isEmpty ? actionItems : persisted, includeTranscript: includeTranscript)
+        }.value
+    }
+
+    func notesDocument(savedItems: [ActionItemState], includeTranscript: Bool = true) -> String {
+        let extracted = MeetingNotesExtractor.extractAll(from: segments, limit: Int.max)
+        let items = resolvedActionItems(saved: savedItems, inferred: extracted.actionItems)
+        return exportMarkdown(decisions: extracted.decisions, actionItems: items, includeTranscript: includeTranscript)
+    }
+
     /// Export meeting session to clean Markdown document.
     /// Uses passed or persistent decisions and action items to guarantee unified output.
     public func exportMarkdown(
         decisions: [String]? = nil,
-        actionItems: [ActionItemState]? = nil
+        actionItems: [ActionItemState]? = nil,
+        includeTranscript: Bool = true
     ) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -122,6 +151,7 @@ public struct MeetingSession: Identifiable, Codable, Sendable {
             }
         }
         
+        guard includeTranscript else { return md }
         md += "## Transcript\n\n"
         let timeFormatter = DateFormatter()
         timeFormatter.dateFormat = "HH:mm:ss"

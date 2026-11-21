@@ -172,4 +172,26 @@ struct MeetingNotesExtractorTests {
         #expect(decisions3.count == 1)
         #expect(newActions3.isEmpty)
     }
+    @Test func revisedSegmentReplacesStaleNotesInLongTwoSpeakerMeeting() {
+        let index = IncrementalNotesExtractor()
+        let meeting = UUID()
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let history = (0..<1000).map { i in
+            TranscriptSegment(speaker: i.isMultiple(of: 2) ? .you : .meeting,
+                              timestamp: start.addingTimeInterval(Double(i)),
+                              text: "Background discussion.", durationSeconds: 1)
+        }
+        index.update(segments: history, for: meeting)
+        let clock = ContinuousClock()
+        let delta = TranscriptSegment(speaker: .you, timestamp: start.addingTimeInterval(1500),
+                                      text: "We decided to use blue.", durationSeconds: 1)
+        let elapsed = clock.measure { _ = index.update(segments: [delta], for: meeting) }
+        print("One meeting-note update after 1,000 segments: " + String(describing: elapsed))
+        #expect(index.decisions.count == 1)
+        let revision = TranscriptSegment(id: delta.id, speaker: .you, timestamp: delta.timestamp,
+                                         text: "I will revise the sketch.", durationSeconds: 1)
+        index.update(segments: [revision], for: meeting)
+        #expect(index.decisions.isEmpty)
+        #expect(index.actionTexts.count == 1)
+    }
 }

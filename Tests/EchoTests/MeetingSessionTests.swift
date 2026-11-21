@@ -129,4 +129,50 @@ struct MeetingSessionTests {
         #expect(filenameA.contains(slugA))
         #expect(filenameB.contains(slugB))
     }
+    @Test func savedAndCopiedNotesShareDecisionsAndPersistedEdits() {
+        let session = MeetingSession(title: "Sprint", segments: [
+            TranscriptSegment(speaker: .you, text: "We decided to ship Friday.", durationSeconds: 1),
+            TranscriptSegment(speaker: .meeting, text: "I will update the roadmap.", durationSeconds: 1)
+        ])
+        let inferred = MeetingNotesExtractor.extractAll(from: session.segments).actionItems
+        let original = session.resolvedActionItems(saved: [], inferred: inferred)
+        #expect(original == session.resolvedActionItems(saved: [], inferred: inferred))
+        let edited = original.map { ActionItemState(id: $0.id, text: $0.text, isDone: true) }
+        let saved = edited + [ActionItemState(text: "Manual follow-up", isDone: true)]
+        let copied = session.notesDocument(savedItems: saved, includeTranscript: false)
+        let exported = session.notesDocument(savedItems: saved)
+        #expect(exported.hasPrefix(copied + "## Transcript"))
+        #expect(copied.contains("ship Friday") || copied.contains("Ship Friday"))
+        #expect(copied.contains("- [x] Manual follow-up"))
+        #expect(session.resolvedActionItems(saved: saved, inferred: inferred) == saved)
+    }
+    @Test func exportReloadsCheckedItemsAndIsolatesMeetingHistory() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("history.sqlite").path
+        let first = MeetingSession(title: "First", segments: [
+            TranscriptSegment(speaker: .you, text: "We decided to release on Monday.", durationSeconds: 1)
+        ])
+        let second = MeetingSession(title: "Second", startTime: first.startTime)
+        do {
+            let db = DatabaseManager(customPath: path)
+            db.saveSession(first)
+            db.saveSession(second)
+            db.saveUtterance(first.segments[0], sessionId: first.id)
+            #expect(db.saveActionItem(ActionItemState(text: "Manual follow-up", isDone: true), sessionId: first.id))
+        }
+        let reopened = DatabaseManager(customPath: path)
+        var history = try #require(reopened.fetchSession(id: first.id))
+        history.segments = reopened.fetchUtterances(sessionId: first.id)
+        let currentExport = await first.markdown(using: reopened)
+        let historyExport = await history.markdown(using: reopened)
+        let copy = await first.markdown(using: reopened, includeTranscript: false)
+        #expect(currentExport == historyExport)
+        #expect(historyExport.hasPrefix(copy + "## Transcript"))
+        #expect(copy.contains("### Key Decisions"))
+        #expect(copy.contains("- [x] Manual follow-up"))
+        let other = await second.markdown(using: reopened)
+        #expect(!other.contains("Manual follow-up"))
+    }
 }

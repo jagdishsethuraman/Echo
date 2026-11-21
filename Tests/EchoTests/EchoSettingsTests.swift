@@ -35,6 +35,22 @@ struct EchoSettingsTests {
         }
     }
     
+    @Test func standaloneRetentionReadsSavedPreferenceAndDefaultsToForever() throws {
+        let suite = "echo-retention-tests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        #expect(EchoSettings.readDictationRetention(from: defaults) == .forever)
+        defaults.set("sevenDays", forKey: EchoSettings.dictationRetentionDefaultsKey)
+        let retention = EchoSettings.readDictationRetention(from: defaults)
+        #expect(retention == .sevenDays)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        #expect(retention.keepsDictation(at: now.addingTimeInterval(-7 * 86_400), now: now))
+        #expect(!retention.keepsDictation(at: now.addingTimeInterval(-7 * 86_400 - 1), now: now))
+        defaults.set("invalid", forKey: EchoSettings.dictationRetentionDefaultsKey)
+        #expect(EchoSettings.readDictationRetention(from: defaults) == .forever)
+    }
+
     @Test func defaultExportDirectoryIsInDocuments() {
         let defaults = UserDefaults.standard
         let backup = DefaultsBackup(defaults: defaults)

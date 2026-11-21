@@ -53,7 +53,8 @@ public struct MeetingStudioView: View {
     @State private var isAccessibilityTrusted: Bool = AXIsProcessTrusted()
     @State private var isMicrophoneAuthorized: Bool = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
 
-    private let incrementalExtractor = IncrementalNotesExtractor()
+    @State private var actionKeys = Set<String>()
+    @State private var savedItems: [ActionItemState] = []
 
     public init(
         session: MeetingSession,
@@ -87,32 +88,19 @@ public struct MeetingStudioView: View {
     }
 
     private func loadSessionData(for sessionId: UUID) {
-        incrementalExtractor.reset(for: sessionId)
-        let persisted = DatabaseManager.shared.fetchActionItems(sessionId: sessionId)
-        actionItems = persisted
-        let (updatedDecisions, newActions) = incrementalExtractor.update(segments: session.segments, for: sessionId)
-        decisions = updatedDecisions
-        for text in newActions {
-            let lower = text.lowercased()
-            if !actionItems.contains(where: { $0.text.lowercased() == lower }) {
-                let item = ActionItemState(text: text, isDone: false)
-                actionItems.append(item)
-                DatabaseManager.shared.saveActionItem(item, sessionId: sessionId)
-            }
-        }
+        isAddingActionItem = false
+        newActionText = ""
+        savedItems = DatabaseManager.shared.fetchActionItems(sessionId: sessionId)
+        refreshNotes()
     }
 
-    private func syncActionItems() {
-        let (updatedDecisions, newActions) = incrementalExtractor.update(segments: session.segments, for: session.id)
-        decisions = updatedDecisions
-        for text in newActions {
-            let lower = text.lowercased()
-            if !actionItems.contains(where: { $0.text.lowercased() == lower }) {
-                let item = ActionItemState(text: text, isDone: false)
-                actionItems.append(item)
-                DatabaseManager.shared.saveActionItem(item, sessionId: session.id)
-            }
-        }
+    private func refreshNotes() {
+        let notes = meetingCoordinator.activeSession?.id == session.id
+            ? meetingCoordinator.noteIndex.snapshot
+            : MeetingNotesExtractor.extractAll(from: session.segments, limit: Int.max)
+        decisions = notes.decisions
+        actionItems = session.resolvedActionItems(saved: savedItems, inferred: notes.actionItems)
+        actionKeys = Set(actionItems.map { $0.text.lowercased() })
     }
 
     private var filteredSegments: [TranscriptSegment] {
@@ -125,23 +113,15 @@ public struct MeetingStudioView: View {
     }
 
     private func copyExecutiveNotes() {
-        let notes = MeetingNotesExtractor.formatMarkdown(
-            title: session.title,
-            decisions: decisions,
-            actionItems: actionItems
-        )
-
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(notes, forType: .string)
-
-        withAnimation(.easeOut(duration: 0.15)) {
-            showNotesCopied = true
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-            withAnimation(.easeOut(duration: 0.2)) {
-                showNotesCopied = false
-            }
+        let current = session
+        Task {
+            let notes = await coordinator.markdown(for: current, includeTranscript: false)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            guard pasteboard.setString(notes, forType: .string) else { return }
+            withAnimation(.easeOut(duration: 0.15)) { showNotesCopied = true }
+            try? await Task.sleep(for: .milliseconds(1800))
+            withAnimation(.easeOut(duration: 0.2)) { showNotesCopied = false }
         }
     }
 
@@ -149,8 +129,9 @@ public struct MeetingStudioView: View {
         let trimmed = newActionText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let item = ActionItemState(text: trimmed, isDone: false)
-        actionItems.append(item)
-        DatabaseManager.shared.saveActionItem(item, sessionId: session.id)
+        guard DatabaseManager.shared.saveActionItem(item, sessionId: session.id) else { return }
+        savedItems.append(item)
+        refreshNotes()
         newActionText = ""
     }
 
@@ -176,6 +157,19 @@ public struct MeetingStudioView: View {
 
             if !isAccessibilityTrusted {
                 permissionBanner
+            }
+
+            if meetingCoordinator.unsavedTranscriptCount > 0 {
+                HStack {
+                    Text("\(meetingCoordinator.unsavedTranscriptCount) unsaved changes")
+                        .help(meetingCoordinator.transcriptSaveError ?? "")
+                    Spacer()
+                    Button("Retry Save") {
+                        Task { await meetingCoordinator.retryTranscriptSaves() }
+                    }
+                    .disabled(meetingCoordinator.isRetryingTranscriptSaves)
+                }
+                .padding(.horizontal)
             }
 
             if let error = meetingCoordinator.captureError {
@@ -210,8 +204,15 @@ public struct MeetingStudioView: View {
         .onChange(of: session.id) { _, newId in
             loadSessionData(for: newId)
         }
-        .onChange(of: session.segments) {
-            syncActionItems()
+        .onReceive(meetingCoordinator.noteIndex.changes) { change in
+            guard change.sessionID == session.id else { return }
+            if change.rebuilt {
+                refreshNotes()
+            } else {
+                decisions = meetingCoordinator.noteIndex.decisions
+                let additions = change.addedActions.filter { actionKeys.insert($0.lowercased()).inserted }
+                actionItems += session.resolvedActionItems(saved: [], inferred: additions)
+            }
         }
     }
 
@@ -677,6 +678,7 @@ public struct MeetingStudioView: View {
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
+                .disabled(meetingCoordinator.activeSession?.id != session.id)
                 .help(isAddingActionItem ? "Cancel" : "Add action item")
             }
 
@@ -692,7 +694,15 @@ public struct MeetingStudioView: View {
                         Button {
                             withAnimation(.easeInOut(duration: 0.15)) {
                                 item.isDone.toggle()
-                                DatabaseManager.shared.updateActionItemDone(id: item.id, isDone: item.isDone)
+                                guard DatabaseManager.shared.saveActionItem(item, sessionId: session.id) else {
+                                    item.isDone.toggle()
+                                    return
+                                }
+                                if let index = savedItems.firstIndex(where: { $0.id == item.id }) {
+                                    savedItems[index] = item
+                                } else {
+                                    savedItems.append(item)
+                                }
                             }
                         } label: {
                             HStack(spacing: 8) {
@@ -772,7 +782,7 @@ public struct MeetingStudioView: View {
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             .padding(14)
             .disabled(coordinator.isMeetingFinalizing)
-            .help("Copy the meeting summary and action items as Markdown")
+            .help("Save the transcript and notes as a Markdown file")
         }
     }
 }

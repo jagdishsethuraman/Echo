@@ -9,7 +9,31 @@ final class EchoAppDelegate: NSObject, NSApplicationDelegate {
         guard !terminationRequested else { return .terminateLater }
         terminationRequested = true
         Task {
-            await AppCoordinator.shared.shutdownGracefully()
+            let coordinator = AppCoordinator.shared
+            var ready = await coordinator.prepareToQuit()
+            while !ready {
+                let meeting = coordinator.meetingCoordinator
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Some speech is still unsaved"
+                alert.informativeText = meeting.transcriptSaveError ?? "Echo is holding unsaved speech in memory."
+                alert.addButton(withTitle: "Retry Save")
+                alert.addButton(withTitle: "Cancel Quit")
+                alert.addButton(withTitle: "Discard Unsaved Speech and Quit")
+                switch alert.runModal() {
+                case .alertFirstButtonReturn:
+                    await meeting.retryTranscriptSaves()
+                    ready = meeting.unsavedTranscriptCount == 0
+                case .alertThirdButtonReturn:
+                    ready = true
+                default:
+                    coordinator.cancelPendingQuit()
+                    terminationRequested = false
+                    sender.reply(toApplicationShouldTerminate: false)
+                    return
+                }
+            }
+            await coordinator.shutdownGracefully()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -19,6 +43,16 @@ final class EchoAppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct EchoMain {
     static func main() async {
+        let args = CommandLine.arguments
+        if args.contains("--test") {
+            do {
+                try await verifyAssembly(arguments: args)
+                return
+            } catch {
+                fputs("Echo verification failed: \(error.localizedDescription)\n", stderr)
+                exit(EXIT_FAILURE)
+            }
+        }
         // Clean any leftover audio files from prior sessions or unexpected terminations
         AudioTempDirectory.sweepOrphanedAudioFiles()
 
@@ -28,94 +62,39 @@ struct EchoMain {
         let delegate = EchoAppDelegate()
         app.delegate = delegate
         
-        let args = CommandLine.arguments
-
         #if DEBUG
         if SnapshotHarness.renderIfRequested() {
             return
         }
         #endif
 
-        if let error = DatabaseManager.shared.startupError {
-            if args.contains("--test") {
-                fputs("\(error.message) (\(error.path))\n", stderr)
-                exit(EXIT_FAILURE)
-            }
+        let database = DatabaseManager.shared
+        while let error = database.startupError {
             let alert = NSAlert()
             alert.alertStyle = .critical
             alert.messageText = "Echo couldn't open its database"
-            alert.informativeText = "\(error.message)\n\n\(error.path)"
+            alert.informativeText = error.message + "\n" + error.path
+            alert.addButton(withTitle: "Retry Durable Storage")
             alert.addButton(withTitle: "Quit")
-            alert.addButton(withTitle: "Show in Finder")
-            if alert.runModal() == .alertSecondButtonReturn {
+            if database.canUseTemporaryStorage {
+                alert.informativeText += "\nTemporary mode keeps new transcripts in memory only. They disappear when Echo quits."
+                alert.addButton(withTitle: "Use Temporary Storage")
+            } else {
+                alert.addButton(withTitle: "Show in Finder")
+            }
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                _ = database.retryDurableStorage()
+            case .alertThirdButtonReturn where database.canUseTemporaryStorage:
+                _ = database.useTemporaryStorage()
+            case .alertThirdButtonReturn:
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: error.path)])
+                return
+            default:
+                return
             }
-            return
         }
 
-        if args.contains("--test") {
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print("  ECHO — Production Assembly Automated Verification")
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            
-            var failedChecks: [String] = []
-
-            // 1. Bundle Invariants
-            let bundle = Bundle.main
-            if bundle.bundlePath.hasSuffix(".app") {
-                if bundle.bundleIdentifier == nil {
-                    failedChecks.append("Missing bundle identifier in Info.plist")
-                }
-                if bundle.infoDictionary?["CFBundleExecutable"] as? String != "Echo" {
-                    failedChecks.append("CFBundleExecutable is not 'Echo'")
-                }
-            }
-
-            let coordinator = AppCoordinator.shared
-            let menuManager = MenuBarManager.shared
-            menuManager.setupMenuBar()
-            
-            print("\n[1/3] Verifying Subsystem Wiring...")
-            let enginePath = coordinator.phononRunner.fermionPath
-            print("  • Phonon Runner: \(enginePath ?? "not found")")
-            if args.contains("--require-engine") && enginePath == nil {
-                failedChecks.append("Required Phonon-2 engine executable not found")
-            }
-            print("  • Hotkey Listener: Ready (Monitoring active)")
-            print("  • Floating HUD Panel: Ready (canBecomeKey: \(coordinator.floatingPill.canBecomeKey))")
-            print("  • Dual Audio Coordinator: Ready")
-            print("  • Menu Bar Item: Initialized")
-            
-            print("\n[2/3] Simulating Menu Bar State Transitions...")
-            menuManager.updateMenuBarIcon(state: .dictating)
-            print("  • State -> Dictating (Icon Updated)")
-            menuManager.updateMenuBarIcon(state: .meetingRecording)
-            print("  • State -> MeetingRecording (Icon Updated)")
-            menuManager.updateMenuBarIcon(state: .idle)
-            print("  • State -> Idle (Icon Updated)")
-            
-            print("\n[3/3] Verifying Meeting Studio Window...")
-            let studio = MeetingStudioWindow.shared
-            print("  • Window Title: \"\(studio.title)\"")
-            print("  • Frame: \(studio.frame.width)x\(studio.frame.height)")
-            print("  • StyleMask contains resizable: \(studio.styleMask.contains(.resizable))")
-            if !studio.styleMask.contains(.resizable) {
-                failedChecks.append("Meeting Studio window is missing .resizable style mask")
-            }
-
-            if !failedChecks.isEmpty {
-                fputs("\n❌ Assembly verification FAILED:\n", stderr)
-                for failure in failedChecks {
-                    fputs("  - \(failure)\n", stderr)
-                }
-                exit(EXIT_FAILURE)
-            }
-            
-            print("\n  Echo Full Assembly Verification: PASSED (100% Operational)")
-            print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            return
-        }
-        
         // Normal Launch: Initialize Menu Bar and run live event loop
         MenuBarManager.shared.setupMenuBar()
         let coordinator = AppCoordinator.shared
@@ -127,5 +106,38 @@ struct EchoMain {
         
         print("Echo Speech Intelligence running. Hold ⌃ Control to dictate (or double-tap ⌃ to lock). Meeting Studio opened.")
         withExtendedLifetime(delegate) { app.run() }
+    }
+
+    /// Run before creating production singletons, opening user storage, or sweeping live audio.
+    private static func verifyAssembly(arguments: [String]) async throws {
+        func failure(_ message: String) -> NSError {
+            NSError(domain: "Echo.Assembly", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        let bundle = Bundle.main
+        guard bundle.bundleIdentifier == "com.ragavij.echo",
+              bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String == "Echo",
+              bundle.url(forResource: "AppIcon", withExtension: "icns") != nil else {
+            throw failure("Run this check from an assembled Echo.app containing its executable, Info.plist and AppIcon.")
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("echo-smoke-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let db = DatabaseManager(customPath: folder.appendingPathComponent("smoke.sqlite").path)
+        if let error = db.startupError { throw error }
+        print("Echo bundle and isolated database checks passed.")
+        let runner = PhononProcessRunner()
+        if let index = arguments.firstIndex(of: "--verify-speech") {
+            guard index + 1 < arguments.count else { throw failure("Provide a speech WAV after --verify-speech.") }
+            let url = URL(fileURLWithPath: arguments[index + 1])
+            guard FileManager.default.fileExists(atPath: url.path) else { throw failure("Speech fixture is missing.") }
+            let (text, _) = try await runner.transcribe(fileURL: url)
+            guard !text.isEmpty else { throw failure("The engine returned an empty transcript.") }
+            print("Speech verification passed: " + text)
+        } else if arguments.contains("--require-engine") {
+            try runner.checkReadiness()
+            print("Engine executable is available. Speech inference was not exercised.")
+        } else {
+            print("Speech inference was not exercised. Use --test --verify-speech <wav> to check the engine and model.")
+        }
     }
 }

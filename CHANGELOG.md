@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- Dictation binds previews, storage and delivery to the originating recording. Echo verifies the focused field before delivery, labels partial recovery, and keeps the untyped remainder available after interrupted typing.
+- Audio admission accounts for startup buffers and overlapping dictations. Concurrent system-audio consumers retain independent ownership. Inference files live in process-specific scratch directories.
+- Failed transcript writes stay available for retry. Storage recovery requires an explicit choice before starting a temporary session. Standalone dictation history has configurable retention.
+- Meeting notes use session-owned incremental extraction. Studio Copy, Studio Save and menu exports render decisions and persisted task edits from the same model. File export runs formatting and writes off the main actor.
+- The assembly check uses disposable storage. The speech verification command runs a real fixture and fails on a missing engine or empty transcript. See Quick Start for the local engine setup.
+
 ## [1.5.0] - 2026-11-20
 
 ### Added
