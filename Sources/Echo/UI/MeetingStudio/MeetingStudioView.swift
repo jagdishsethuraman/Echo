@@ -137,7 +137,6 @@ public struct MeetingStudioView: View {
     }
 
     private func refreshPermissions() {
-        isAccessibilityTrusted = AXIsProcessTrusted()
         isMicrophoneAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
@@ -201,6 +200,9 @@ public struct MeetingStudioView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshPermissions()
+        }
+        .onReceive(coordinator.hotkeyManager.$accessibilityGranted) { granted in
+            isAccessibilityTrusted = granted
         }
         .onChange(of: session.id) { _, newId in
             loadSessionData(for: newId)
