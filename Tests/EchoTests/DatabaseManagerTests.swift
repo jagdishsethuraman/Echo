@@ -332,7 +332,7 @@ struct DatabaseManagerTests {
         #expect(failure.message.contains("dictionary"))
     }
 
-    @Test func deleteEmptySessionsKeepsSessionsWithUtterances() {
+    @Test func deleteEmptySessionsKeepsSessionsWithUtterances() throws {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
 
@@ -353,14 +353,14 @@ struct DatabaseManagerTests {
         let emptyOpen = MeetingSession(title: "Still recording", startTime: Date(timeIntervalSince1970: 1_700_000_200))
         db.saveSession(emptyOpen)
 
-        let removed = db.deleteEmptySessions(includingOpen: false)
+        let removed = try db.deleteEmptySessions(includingOpen: false)
 
         #expect(removed == 1)
         let remaining = Set(db.fetchRecentSessions(limit: 10).map(\.title))
         #expect(remaining == ["Populated", "Still recording"])
     }
 
-    @Test func launchRetentionRemovesStaleOpenSessionsButHonoursKeepId() {
+    @Test func launchRetentionRemovesStaleOpenSessionsButHonoursKeepId() throws {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
 
@@ -371,15 +371,15 @@ struct DatabaseManagerTests {
         db.saveSession(staleOpen)
 
         // Protecting an in-progress recording keeps its empty open row.
-        #expect(db.deleteEmptySessions(includingOpen: true, keeping: staleOpen.id) == 0)
+        #expect(try db.deleteEmptySessions(includingOpen: true, keeping: staleOpen.id) == 0)
         #expect(db.fetchRecentSessions().count == 1)
 
         // At launch nothing is protected, so the stale row is pruned.
-        #expect(db.deleteEmptySessions(includingOpen: true) == 1)
+        #expect(try db.deleteEmptySessions(includingOpen: true) == 1)
         #expect(db.fetchRecentSessions().isEmpty)
     }
     
-    @Test func deleteSessionCascadesToUtterances() {
+    @Test func deleteSessionCascadesToUtterances() throws {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
         
@@ -394,7 +394,7 @@ struct DatabaseManagerTests {
         #expect(db.fetchUtterances(sessionId: session.id).count == 2)
         
         // Deleting the session must cascade and delete all associated utterances
-        db.deleteSession(id: session.id)
+        #expect(try db.deleteSession(id: session.id))
         
         #expect(db.fetchRecentSessions().filter { $0.id == session.id }.isEmpty)
         #expect(db.fetchUtterances(sessionId: session.id).isEmpty)
@@ -459,7 +459,7 @@ struct DatabaseManagerTests {
         #expect(utterances.first?.text == "atomic line")
     }
 
-    @Test func deleteStandaloneDictationsRemovesOnlyUnlinkedUtterances() {
+    @Test func deleteStandaloneDictationsRemovesOnlyUnlinkedUtterances() throws {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
 
@@ -477,7 +477,7 @@ struct DatabaseManagerTests {
         let dictationsBefore = db.fetchRecentDictations()
         #expect(dictationsBefore.count == 2)
 
-        let deleted = db.deleteStandaloneDictations()
+        let deleted = try db.deleteStandaloneDictations()
         #expect(deleted == 2)
 
         let dictationsAfter = db.fetchRecentDictations()
@@ -489,6 +489,74 @@ struct DatabaseManagerTests {
         #expect(meetingUtterances.first?.text == "meeting utterance")
     }
 
+    @Test func retentionDeletesOnlyStandaloneDictationsOlderThanTheCutoff() throws {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+        let cutoff = Date(timeIntervalSince1970: 1_700_000_000)
+        let older = TranscriptSegment(speaker: .you, timestamp: cutoff.addingTimeInterval(-1), text: "old", durationSeconds: 1)
+        let atCutoff = TranscriptSegment(speaker: .you, timestamp: cutoff, text: "recent", durationSeconds: 1)
+        let linked = TranscriptSegment(speaker: .you, timestamp: older.timestamp, text: "meeting dictation", durationSeconds: 1)
+        let session = MeetingSession(title: "Meeting")
+        db.saveSession(session)
+        db.saveUtterance(older, isDictation: true)
+        db.saveUtterance(atCutoff, isDictation: true)
+        db.saveUtterance(linked, sessionId: session.id, isDictation: true)
+
+        #expect(try db.deleteStandaloneDictations(olderThan: cutoff) == 1)
+        #expect(Set(db.fetchRecentDictations().map(\.id)) == [atCutoff.id, linked.id])
+        #expect(try db.deleteStandaloneDictations() == 1)
+        #expect(db.fetchUtterances(sessionId: session.id).map(\.id) == [linked.id])
+        #expect(try db.deleteSession(id: UUID()) == false)
+    }
+
+    @Test func temporaryStorageRequiresExplicitConsentAndLaterLaunchUsesDurablePath() throws {
+        let directory = makeDirectory()
+        defer { remove(directory) }
+        let primaryDirectory = directory.appendingPathComponent("primary")
+        let fallbackDirectory = directory.appendingPathComponent("fallback")
+        try Data().write(to: primaryDirectory)
+        try Data().write(to: fallbackDirectory)
+        let primary = primaryDirectory.appendingPathComponent("echo.sqlite").path
+        let fallback = fallbackDirectory.appendingPathComponent("echo.sqlite").path
+        let startup = DatabaseManager(durablePath: primary, fallbackPath: fallback)
+
+        #expect(startup.startupError != nil)
+        #expect(startup.canUseTemporaryStorage)
+        #expect(!startup.isUsingTemporaryStorage)
+        #expect(!startup.retryDurableStorage())
+        let session = MeetingSession(title: "Temporary meeting")
+        if case .success = startup.saveSession(session) {
+            Issue.record("Writes succeeded before consent")
+        }
+
+        #expect(startup.useTemporaryStorage())
+        #expect(startup.startupError == nil)
+        #expect(startup.isUsingTemporaryStorage)
+        try startup.saveSession(session).get()
+        #expect(startup.fetchSession(id: session.id) != nil)
+
+        try FileManager.default.removeItem(at: primaryDirectory)
+        let nextLaunch = DatabaseManager(durablePath: primary, fallbackPath: fallback)
+        #expect(nextLaunch.startupError == nil)
+        #expect(!nextLaunch.isUsingFallbackStorage)
+        #expect(nextLaunch.activeDatabasePath == primary)
+        #expect(nextLaunch.fetchSession(id: session.id) == nil)
+    }
+
+    @Test func incompatiblePrimaryDatabasePreservesItsStartupError() throws {
+        let (db, directory) = makeDatabase()
+        defer { remove(directory) }
+        try withSQLite(at: db.activeDatabasePath) { connection in
+            try #require(sqlite3_exec(connection, "PRAGMA user_version = 999;", nil, nil, nil) == SQLITE_OK)
+        }
+        let fallback = directory.appendingPathComponent("fallback.sqlite").path
+        let reopened = DatabaseManager(durablePath: db.activeDatabasePath, fallbackPath: fallback)
+        #expect(reopened.startupError?.message.contains("requires a newer version") == true)
+        #expect(!reopened.canUseTemporaryStorage)
+        #expect(!reopened.useTemporaryStorage())
+        #expect(!FileManager.default.fileExists(atPath: fallback))
+    }
+
     @Test func storageReportsActivePathAndFallbackStatus() {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
@@ -497,7 +565,7 @@ struct DatabaseManagerTests {
         #expect(db.isUsingFallbackStorage == false)
     }
 
-    @Test func actionItemsRoundTripAndPersistence() async {
+    @Test func actionItemsRoundTripAndPersistence() async throws {
         let (db, directory) = makeDatabase()
         defer { remove(directory) }
 
@@ -527,7 +595,7 @@ struct DatabaseManagerTests {
         #expect(asyncItems.count == 3)
 
         // Cascade delete on session removal
-        db.deleteSession(id: session.id)
+        #expect(try db.deleteSession(id: session.id))
         let itemsAfterDelete = db.fetchActionItems(sessionId: session.id)
         #expect(itemsAfterDelete.isEmpty)
     }

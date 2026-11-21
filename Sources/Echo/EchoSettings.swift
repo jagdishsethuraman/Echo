@@ -73,6 +73,50 @@ public enum EchoSettings {
         + "set ECHO_FERMION_PATH, or place `fermion` in PATH."
     }
     
+    // MARK: - Standalone Dictation History
+
+    public enum DictationRetention: String, CaseIterable, Sendable {
+        case forever
+        case thirtyDays
+        case sevenDays
+        case disabled
+
+        var menuTitle: String {
+            switch self {
+            case .forever: return "Keep Forever"
+            case .thirtyDays: return "Keep for 30 Days"
+            case .sevenDays: return "Keep for 7 Days"
+            case .disabled: return "Do Not Keep"
+            }
+        }
+
+        func cutoff(at now: Date) -> Date? {
+            switch self {
+            case .forever: return nil
+            case .thirtyDays: return now.addingTimeInterval(-30 * 86_400)
+            case .sevenDays: return now.addingTimeInterval(-7 * 86_400)
+            case .disabled: return nil
+            }
+        }
+
+        func keepsDictation(at timestamp: Date, now: Date = Date()) -> Bool {
+            guard self != .disabled else { return false }
+            return cutoff(at: now).map { timestamp >= $0 } ?? true
+        }
+    }
+
+    public static let dictationRetentionDefaultsKey = "echo.dictationRetention"
+
+    public static var dictationRetention: DictationRetention {
+        get { readDictationRetention(from: .standard) }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: dictationRetentionDefaultsKey) }
+    }
+
+    static func readDictationRetention(from defaults: UserDefaults) -> DictationRetention {
+        defaults.string(forKey: dictationRetentionDefaultsKey)
+            .flatMap(DictationRetention.init(rawValue:)) ?? .forever
+    }
+
     // MARK: - Export
     
     /// Folder used by "Export Notes to Obsidian". Defaults to

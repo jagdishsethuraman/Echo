@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import Echo
 
@@ -7,6 +8,7 @@ struct MeetingCoordinatorTests {
     @MainActor
     private func makeCoordinator(
         engine: @escaping TranscriptionService.Engine = { _ in "" },
+        transcriptionService: TranscriptionService? = nil,
         startCapture: @escaping @MainActor () async throws -> Void = {},
         stopCapture: @escaping @MainActor () async -> Void = {}
     ) -> (coordinator: MeetingCoordinator, database: DatabaseManager, directory: URL) {
@@ -16,7 +18,7 @@ struct MeetingCoordinatorTests {
         let database = DatabaseManager(customPath: directory.appendingPathComponent("echo.sqlite").path)
         let coordinator = MeetingCoordinator(
             database: database,
-            transcriptionService: TranscriptionService(engine: engine),
+            transcriptionService: transcriptionService ?? TranscriptionService(engine: engine),
             startCapture: startCapture,
             stopCapture: stopCapture
         )
@@ -247,8 +249,66 @@ struct MeetingCoordinatorTests {
         #expect(database.fetchRecentSessions().count == 1)
     }
 
+    @Test @MainActor func startupAndRecordingShareTheMeetingPCMByteBudget() async throws {
+        let captureStarted = MeetingTestGate()
+        let allowStart = MeetingTestGate()
+        let engineStarted = MeetingTestGate()
+        let allowEngine = MeetingTestGate()
+        let service = TranscriptionService(
+            engine: { data in
+                if data.first == 1 { engineStarted.signal() }
+                await allowEngine.wait()
+                return "segment \(data.first ?? 0)"
+            },
+            maxPendingBytes: 128
+        )
+        let (coordinator, _, directory) = makeCoordinator(
+            transcriptionService: service,
+            startCapture: {
+                captureStarted.signal()
+                await allowStart.wait()
+            }
+        )
+        defer { remove(directory) }
+
+        let start = Task { try await coordinator.startSession() }
+        await captureStarted.wait()
+        for index in 1...10 {
+            coordinator.enqueueSegment(
+                track: index.isMultiple(of: 2) ? .meeting : .you,
+                pcmData: Data(repeating: UInt8(index), count: 64),
+                duration: 1
+            )
+        }
+        #expect(service.currentQueuedBytes == 128)
+
+        allowStart.signal()
+        try await start.value
+        await engineStarted.wait()
+        #expect(service.currentQueuedBytes == 128)
+        #expect(coordinator.captureError?.contains("8 meeting segments could not be transcribed") == true)
+        await coordinator.processSpeechSegment(track: .meeting, pcmData: Data([99]), duration: 1)
+        #expect(coordinator.captureError?.contains("9 meeting segments could not be transcribed") == true)
+
+        allowEngine.signal()
+        let session = try #require(await coordinator.stopSession())
+        #expect(Set(session.segments.map(\.text)) == ["segment 1", "segment 2"])
+        #expect(await service.waitUntilIdle(timeout: 2))
+        #expect(service.currentQueuedBytes == 0)
+    }
+
     @Test @MainActor func failedStartLeavesNoOpenSession() async {
-        let (coordinator, database, directory) = makeCoordinator(startCapture: { throw TestFailure.captureUnavailable })
+        weak var recorder: MeetingCoordinator?
+        let service = TranscriptionService(engine: { _ in "should not decode" }, maxPendingBytes: 1)
+        let (coordinator, database, directory) = makeCoordinator(
+            transcriptionService: service,
+            startCapture: {
+                recorder?.enqueueSegment(track: .you, pcmData: Data([1]), duration: 0.5)
+                #expect(service.currentQueuedBytes == 1)
+                throw TestFailure.captureUnavailable
+            }
+        )
+        recorder = coordinator
         defer { remove(directory) }
 
         await #expect(throws: TestFailure.captureUnavailable) {
@@ -257,6 +317,7 @@ struct MeetingCoordinatorTests {
         #expect(coordinator.activeSession == nil)
         #expect(coordinator.captureError != nil)
         #expect(database.fetchRecentSessions().isEmpty)
+        #expect(service.isIdle)
     }
 
     @Test @MainActor func missingEnginePreventsCaptureAndPersistence() async {
@@ -276,6 +337,89 @@ struct MeetingCoordinatorTests {
         #expect(!attemptedCapture)
         #expect(coordinator.captureError?.contains("missing-engine") == true)
         #expect(database.fetchRecentSessions().isEmpty)
+    }
+
+    @Test @MainActor func failedMeetingWriteIsUnpublishedUntilRetryAndPreservesFinalizedSession() async throws {
+        let (coordinator, database, directory) = makeCoordinator(engine: { _ in "retry this meeting line" })
+        defer { remove(directory) }
+        try await coordinator.startSession(title: "Retry meeting")
+        let id = try #require(coordinator.activeSession?.id)
+        try executeSQL("""
+            CREATE TRIGGER reject_utterance BEFORE INSERT ON utterances
+            BEGIN SELECT RAISE(ABORT, 'injected utterance write failure'); END;
+            """, at: database.activeDatabasePath)
+
+        await coordinator.processSpeechSegment(track: .meeting, pcmData: Data([1]), duration: 1)
+        #expect(coordinator.activeSession?.segments.isEmpty == true)
+        #expect(coordinator.unsavedTranscriptCount == 1)
+        #expect(coordinator.transcriptSaveError?.contains("injected utterance write failure") == true)
+        #expect(database.fetchUtterances(sessionId: id).isEmpty)
+
+        _ = await coordinator.stopSession()
+        let persistedEnd = try #require(database.fetchSession(id: id)?.endTime)
+        try executeSQL("DROP TRIGGER reject_utterance;", at: database.activeDatabasePath)
+        await coordinator.retryTranscriptSaves()
+        await coordinator.retryTranscriptSaves()
+
+        #expect(coordinator.unsavedTranscriptCount == 0)
+        #expect(coordinator.transcriptSaveError == nil)
+        #expect(coordinator.activeSession?.segments.map(\.text) == ["retry this meeting line"])
+        let reopened = DatabaseManager(customPath: database.activeDatabasePath)
+        #expect(reopened.fetchSession(id: id)?.endTime == persistedEnd)
+        #expect(reopened.fetchUtterances(sessionId: id).map(\.text) == ["retry this meeting line"])
+    }
+
+    @Test @MainActor func failedDeleteKeepsTheActiveSessionAndItsUtterances() async throws {
+        let (coordinator, database, directory) = makeCoordinator()
+        defer { remove(directory) }
+        await coordinator.appendDictation(text: "preserve this line")
+        let id = try #require(coordinator.activeSession?.id)
+        try executeSQL("""
+            CREATE TRIGGER reject_deletion BEFORE DELETE ON sessions
+            BEGIN SELECT RAISE(ABORT, 'injected meeting deletion failure'); END;
+            """, at: database.activeDatabasePath)
+
+        if case .failed(let error) = await coordinator.deleteSession(id: id) {
+            #expect(error.contains("injected meeting deletion failure"))
+        } else {
+            Issue.record("The coordinator should report the failed deletion")
+        }
+        #expect(coordinator.activeSession?.id == id)
+        #expect(database.fetchUtterances(sessionId: id).map(\.text) == ["preserve this line"])
+
+        try executeSQL("DROP TRIGGER reject_deletion;", at: database.activeDatabasePath)
+        guard case .deleted = await coordinator.deleteSession(id: id) else {
+            Issue.record("The coordinator should report the successful deletion")
+            return
+        }
+        #expect(coordinator.activeSession == nil)
+        #expect(database.fetchUtterances(sessionId: id).isEmpty)
+    }
+
+    @Test @MainActor func lateDictationPersistsToItsOriginalMeeting() async throws {
+        let (coordinator, database, directory) = makeCoordinator()
+        defer { remove(directory) }
+        try await coordinator.startSession(title: "Meeting A")
+        let firstID = try #require(coordinator.recordingSessionID)
+        _ = await coordinator.stopSession()
+        let persistedEnd = try #require(database.fetchSession(id: firstID)?.endTime)
+        try await coordinator.startSession(title: "Meeting B")
+        let secondID = try #require(coordinator.recordingSessionID)
+        let segment = TranscriptSegment(speaker: .you, text: "Words from A", durationSeconds: 1)
+        await coordinator.saveDictation(segment, meetingSessionID: firstID)
+
+        #expect(database.fetchUtterances(sessionId: firstID).map(\.id) == [segment.id])
+        #expect(database.fetchSession(id: firstID)?.endTime == persistedEnd)
+        #expect(database.fetchUtterances(sessionId: secondID).isEmpty)
+        #expect(coordinator.activeSession?.segments.isEmpty == true)
+        _ = await coordinator.stopSession()
+    }
+
+    private func executeSQL(_ sql: String, at path: String) throws {
+        var connection: OpaquePointer?
+        defer { sqlite3_close(connection) }
+        try #require(sqlite3_open(path, &connection) == SQLITE_OK)
+        try #require(sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK)
     }
 
     @Test @MainActor func failuresCountTowardsTheSameMeetingAndOtherSegmentsStillPersist() async throws {

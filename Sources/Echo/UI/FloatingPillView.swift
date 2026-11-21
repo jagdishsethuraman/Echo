@@ -5,6 +5,7 @@ public enum PillState: Equatable, Sendable {
     case listening(audioLevel: Float, livePartial: String = "", isLocked: Bool = false, elapsedSeconds: Int = 0)
     case transcribing
     case success(preview: String)
+    case notice(message: String)
     case error(message: String)
 }
 
@@ -143,6 +144,16 @@ public struct FloatingPillView: View {
                     .foregroundStyle(EchoTheme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+
+            case .notice(let message):
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(EchoTheme.accent)
+                    .font(.system(size: 13, weight: .semibold))
+
+                Text(message)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(EchoTheme.textPrimary)
+                    .lineLimit(1)
 
             case .error(let msg):
                 Image(systemName: "exclamationmark.triangle.fill")

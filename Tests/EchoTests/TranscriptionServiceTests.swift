@@ -198,4 +198,85 @@ struct TranscriptionServiceTests {
         _ = await service.waitUntilIdle(timeout: 2)
         #expect(service.currentQueuedBytes == 0)
     }
+
+    @Test func repeatedDictationsRespectTheirBudgetWhileMeetingInferenceIsBusy() async throws {
+        let allowEngine = DispatchGroup()
+        allowEngine.enter()
+        let calls = CompletionRecorder()
+        let chunk = Data(repeating: 0, count: 100)
+        let service = TranscriptionService(
+            engine: { _ in
+                calls.record("started")
+                await withCheckedContinuation { continuation in
+                    allowEngine.notify(queue: .global()) { continuation.resume() }
+                }
+                return "ok"
+            },
+            maxPendingBytes: 100,
+            maxDictationPendingBytes: 200
+        )
+
+        let meeting = service.submit(pcmData: chunk) { _ in }
+        let dictations = (0..<2).map { _ in Task { try await service.transcribe(pcmData: chunk) } }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while service.currentQueuedBytes < 300, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(service.currentQueuedBytes == 300)
+        #expect(!service.isIdle)
+
+        if service.currentQueuedBytes == 300 {
+            for _ in 0..<10 {
+                await #expect(throws: TranscriptionService.TranscriptionError.queueOverloaded(bytesQueued: 200, maxBytes: 200)) {
+                    try await service.transcribe(pcmData: chunk)
+                }
+            }
+            #expect(service.currentQueuedBytes == 300)
+            #expect(calls.count == 1)
+        }
+
+        allowEngine.leave()
+        await meeting.value
+        for dictation in dictations {
+            #expect(try await dictation.value == "ok")
+        }
+        #expect(calls.count == 3)
+        #expect(service.currentQueuedBytes == 0)
+        #expect(service.isIdle)
+    }
+
+    @Test func runnerReceivesPrivateWAVInTheProcessDirectory() async throws {
+        let files = FileManager.default
+        let fixture = files.temporaryDirectory.appendingPathComponent("echo-transcription-\(UUID())")
+        try files.createDirectory(at: fixture, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: fixture) }
+
+        let executable = fixture.appendingPathComponent("fermion-fixture")
+        let script = """
+        #!/bin/sh
+        test -r "$3" || exit 1
+        /usr/bin/stat -f '%Lp' "$3" || exit 1
+        printf '%s\\n' "$3"
+        """
+        try Data(script.utf8).write(to: executable)
+        try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let scratch = fixture.appendingPathComponent("audio")
+        let service = TranscriptionService(
+            runner: PhononProcessRunner(fermionPath: executable.path),
+            tempDirectory: scratch
+        )
+
+        let transcript = try await service.transcribe(pcmData: pcm)
+        let lines = transcript.split(separator: "\n")
+        #expect(lines.first == "600")
+        let wavPath = try #require(lines.last.map(String.init))
+        let wav = URL(fileURLWithPath: wavPath)
+        let directory = wav.deletingLastPathComponent()
+        let pid = ProcessInfo.processInfo.processIdentifier
+        #expect(directory.lastPathComponent.hasPrefix("echo_pid_\(pid)_"))
+        #expect(directory.deletingLastPathComponent().path == scratch.path)
+        let permissions = try files.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o700)
+        #expect(!files.fileExists(atPath: wavPath))
+    }
 }

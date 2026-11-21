@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 public struct MeetingNotes: Equatable, Sendable {
     public var decisions: [String]
@@ -263,84 +264,90 @@ public enum MeetingNotesExtractor {
     }
 }
 
-/// Thread-safe incremental extractor that caches NLP decisions and action items by segment ID,
-/// avoiding O(N) re-scans of meeting history as new segments arrive.
+/// Owned by the meeting coordinator. Live callers pass only segments that changed.
 public final class IncrementalNotesExtractor: @unchecked Sendable {
     private let lock = NSLock()
     private var sessionID: UUID?
-    private var cachedSegmentNotes: [UUID: MeetingNotes] = [:]
-    private var cachedDecisions: [String] = []
-    private var decisionSet: Set<String> = []
-    private var cachedActionTexts: [String] = []
-    private var actionSet: Set<String> = []
+    private var entries: [UUID: (segment: TranscriptSegment, notes: MeetingNotes)] = [:]
+    private var notes = MeetingNotes()
+    private var decisionSet = Set<String>()
+    private var actionSet = Set<String>()
+    private var lastTimestamp: Date?
+    struct Change {
+        let sessionID: UUID
+        let rebuilt: Bool
+        let addedActions: [String]
+    }
+    let changes = PassthroughSubject<Change, Never>()
 
     public init() {}
 
     public func reset(for sessionID: UUID? = nil) {
-        lock.withLock {
-            self.sessionID = sessionID
-            self.cachedSegmentNotes.removeAll()
-            self.cachedDecisions.removeAll()
-            self.decisionSet.removeAll()
-            self.cachedActionTexts.removeAll()
-            self.actionSet.removeAll()
+        lock.withLock { clear(for: sessionID) }
+    }
+
+    private func clear(for sessionID: UUID?) {
+        self.sessionID = sessionID
+        entries.removeAll()
+        notes = MeetingNotes()
+        lastTimestamp = nil
+        decisionSet.removeAll()
+        actionSet.removeAll()
+    }
+
+    private func add(_ extracted: MeetingNotes) {
+        for text in extracted.decisions where decisionSet.insert(text.lowercased()).inserted {
+            notes.decisions.append(text)
+        }
+        for text in extracted.actionItems where actionSet.insert(text.lowercased()).inserted {
+            notes.actionItems.append(text)
         }
     }
 
-    /// Incrementally processes segments: only scans segments not yet in the cache.
-    /// Returns the complete deduplicated decisions and newly extracted action item texts.
-    public func update(
-        segments: [TranscriptSegment],
-        for currentSessionID: UUID
-    ) -> (decisions: [String], newActionTexts: [String]) {
-        lock.withLock {
-            if self.sessionID != currentSessionID {
-                self.sessionID = currentSessionID
-                self.cachedSegmentNotes.removeAll()
-                self.cachedDecisions.removeAll()
-                self.decisionSet.removeAll()
-                self.cachedActionTexts.removeAll()
-                self.actionSet.removeAll()
-            }
-
-            var newActions: [String] = []
-
+    @discardableResult
+    public func update(segments: [TranscriptSegment], for id: UUID) -> (decisions: [String], newActionTexts: [String]) {
+        var changed = false
+        var rebuilt = false
+        let result = lock.withLock { () -> ([String], [String]) in
+            if sessionID != id { clear(for: id) }
+            let initialCount = notes.actionItems.count
+            var rebuild = false
+            var addedKeys = Set<String>()
             for segment in segments {
-                let notes: MeetingNotes
-                if let existing = cachedSegmentNotes[segment.id] {
-                    notes = existing
-                } else {
-                    notes = MeetingNotesExtractor.extractAll(from: [segment])
-                    cachedSegmentNotes[segment.id] = notes
-
-                    for decision in notes.decisions {
-                        let key = decision.lowercased()
-                        if !decisionSet.contains(key) {
-                            decisionSet.insert(key)
-                            cachedDecisions.append(decision)
-                        }
-                    }
-
-                    for action in notes.actionItems {
-                        let key = action.lowercased()
-                        if !actionSet.contains(key) {
-                            actionSet.insert(key)
-                            cachedActionTexts.append(action)
-                            newActions.append(action)
-                        }
-                    }
+                let previous = entries[segment.id]
+                if previous?.segment == segment { continue }
+                let extracted = MeetingNotesExtractor.extractAll(from: [segment], limit: Int.max)
+                entries[segment.id] = (segment, extracted)
+                if previous != nil || (lastTimestamp.map { segment.timestamp < $0 } == true && extracted != MeetingNotes()) {
+                    rebuild = true
+                }
+                lastTimestamp = max(segment.timestamp, lastTimestamp ?? segment.timestamp)
+                if !rebuild {
+                    let before = (notes.decisions.count, notes.actionItems.count)
+                    add(extracted)
+                    for text in notes.actionItems.dropFirst(before.1) { addedKeys.insert(text.lowercased()) }
+                    changed = changed || before != (notes.decisions.count, notes.actionItems.count)
                 }
             }
-
-            return (cachedDecisions, newActions)
+            if rebuild {
+                let oldActions = actionSet.subtracting(addedKeys)
+                notes = MeetingNotes()
+                decisionSet.removeAll()
+                actionSet.removeAll()
+                for entry in entries.values.sorted(by: {
+                    ($0.segment.timestamp, $0.segment.id.uuidString) < ($1.segment.timestamp, $1.segment.id.uuidString)
+                }) { add(entry.notes) }
+                changed = true
+                rebuilt = true
+                return (notes.decisions, notes.actionItems.filter { !oldActions.contains($0.lowercased()) })
+            }
+            return (notes.decisions, Array(notes.actionItems.dropFirst(initialCount)))
         }
+        if changed { changes.send(Change(sessionID: id, rebuilt: rebuilt, addedActions: result.1)) }
+        return result
     }
 
-    public var decisions: [String] {
-        lock.withLock { cachedDecisions }
-    }
-
-    public var actionTexts: [String] {
-        lock.withLock { cachedActionTexts }
-    }
+    public var snapshot: MeetingNotes { lock.withLock { notes } }
+    public var decisions: [String] { snapshot.decisions }
+    public var actionTexts: [String] { snapshot.actionItems }
 }

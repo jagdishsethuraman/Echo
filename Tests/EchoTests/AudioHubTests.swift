@@ -125,16 +125,109 @@ struct AudioHubTests {
     }
 
     @Test func failedMicrophoneStartLeavesZeroRetainCount() {
-        let hub = AudioHub()
-        do {
+        enum StartFailure: Error { case unavailable }
+        let hub = AudioHub(
+            startMicrophoneCapture: { throw StartFailure.unavailable },
+            startSystemCapture: {},
+            stopSystemCapture: {}
+        )
+        #expect(throws: StartFailure.unavailable) {
             try hub.retainMicrophone()
-            #expect(hub.currentMicRetainCount == 1)
-            hub.releaseMicrophone()
-            #expect(hub.currentMicRetainCount == 0)
-        } catch {
-            // Hardware start failure must leave retain count at zero
-            #expect(hub.currentMicRetainCount == 0)
         }
+        #expect(hub.currentMicRetainCount == 0)
+    }
+
+    @Test func overlappingSystemRetainsShareStartAndReleaseIndependently() async throws {
+        let allowStart = AudioTestGate()
+        let starting = AudioTestGate()
+        let starts = ValueRecorder<Int>()
+        let stops = ValueRecorder<Int>()
+        let hub = AudioHub(startSystemCapture: {
+            starts.record(1)
+            starting.signal()
+            await allowStart.wait()
+        }, stopSystemCapture: { stops.record(1) })
+
+        let first = Task { try await hub.retainSystemAudio() }
+        await starting.wait()
+        let second = Task { try await hub.retainSystemAudio() }
+        await waitForRetainCount(2, on: hub)
+        allowStart.signal()
+        try await first.value
+        try await second.value
+
+        #expect(starts.count == 1)
+        #expect(hub.currentSystemRetainCount == 2)
+        await hub.releaseSystemAudio()
+        #expect(hub.currentSystemRetainCount == 1)
+        #expect(stops.count == 0)
+        await hub.releaseSystemAudio()
+        #expect(hub.currentSystemRetainCount == 0)
+        #expect(stops.count == 1)
+    }
+
+    @Test func retainWaitsForThePreviousSystemStop() async throws {
+        let allowStop = AudioTestGate()
+        let stopping = AudioTestGate()
+        let events = ValueRecorder<String>()
+        let hub = AudioHub(startSystemCapture: {
+            events.record("start")
+        }, stopSystemCapture: {
+            events.record("stopping")
+            if events.count == 2 {
+                stopping.signal()
+                await allowStop.wait()
+            }
+            events.record("stopped")
+        })
+
+        try await hub.retainSystemAudio()
+        let release = Task { await hub.releaseSystemAudio() }
+        await stopping.wait()
+        let retaining = AudioTestGate()
+        let restart = Task {
+            retaining.signal()
+            try await hub.retainSystemAudio()
+        }
+        await retaining.wait()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(events.snapshot == ["start", "stopping"])
+        allowStop.signal()
+        await release.value
+        try await restart.value
+        #expect(events.snapshot == ["start", "stopping", "stopped", "start"])
+        await hub.releaseSystemAudio()
+    }
+
+    @Test func shutdownDuringSystemStartupWaitsAndClosesTheStream() async {
+        let starting = AudioTestGate()
+        let allowStart = AudioTestGate()
+        let events = ValueRecorder<String>()
+        let hub = AudioHub(startSystemCapture: {
+            starting.signal()
+            await allowStart.wait()
+            events.record("started")
+        }, stopSystemCapture: { events.record("stopped") })
+
+        let retain = Task { try await hub.retainSystemAudio() }
+        await starting.wait()
+        let shutdown = Task { await hub.stopAll() }
+        await waitForRetainCount(0, on: hub)
+        #expect(events.count == 0)
+        allowStart.signal()
+
+        await shutdown.value
+        await #expect(throws: CancellationError.self) { try await retain.value }
+        #expect(events.snapshot == ["started", "stopped"])
+        #expect(hub.currentSystemRetainCount == 0)
+    }
+
+    private func waitForRetainCount(_ count: Int, on hub: AudioHub) async {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while hub.currentSystemRetainCount != count, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(hub.currentSystemRetainCount == count)
     }
 
     @Test func audioTempDirectoryProtectsCurrentProcess() {
@@ -155,6 +248,58 @@ struct AudioHubTests {
             // Cleanup current process removes it
             AudioTempDirectory.cleanupCurrentProcess()
             #expect(!FileManager.default.fileExists(atPath: url.path))
+        }
+    }
+
+    @Test func sweepProtectsAnotherProcessAndPreservesFilesWithoutAnOwner() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory.appendingPathComponent("echo-audio-sweep-\(UUID())")
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["15"]
+        try child.run()
+        defer {
+            if child.isRunning { child.terminate() }
+            child.waitUntilExit()
+        }
+
+        let ownedDirectory = root.appendingPathComponent("echo_pid_\(child.processIdentifier)_\(UUID())")
+        let unknownDirectory = root.appendingPathComponent("pid_unrecognized")
+        for directory in [ownedDirectory, unknownDirectory] {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: false)
+        }
+        let activeWAV = ownedDirectory.appendingPathComponent("active.wav")
+        let legacyWAV = root.appendingPathComponent("echo_segment_legacy.wav")
+        try Data([1]).write(to: activeWAV)
+        try Data([1]).write(to: legacyWAV)
+
+        AudioTempDirectory.sweepOrphanedAudioFiles(in: root)
+        #expect(fileManager.fileExists(atPath: activeWAV.path))
+        #expect(fileManager.fileExists(atPath: legacyWAV.path))
+        #expect(fileManager.fileExists(atPath: unknownDirectory.path))
+
+        child.terminate()
+        child.waitUntilExit()
+        AudioTempDirectory.sweepOrphanedAudioFiles(in: root)
+        #expect(!fileManager.fileExists(atPath: ownedDirectory.path))
+        #expect(fileManager.fileExists(atPath: legacyWAV.path))
+        #expect(fileManager.fileExists(atPath: unknownDirectory.path))
+    }
+}
+
+private final class AudioTestGate: Sendable {
+    private let group = DispatchGroup()
+
+    init() { group.enter() }
+
+    func signal() { group.leave() }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            group.notify(queue: .global()) { continuation.resume() }
         }
     }
 }
