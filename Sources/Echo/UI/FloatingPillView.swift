@@ -10,6 +10,7 @@ public enum PillState: Equatable, Sendable {
 }
 
 public struct FloatingPillView: View {
+    @ObservedObject private var shortcuts = KeyboardShortcuts.shared
     public let state: PillState
     public var onStop: (() -> Void)?
     public var onCancel: (() -> Void)?
@@ -72,7 +73,7 @@ public struct FloatingPillView: View {
                 }
 
                 if livePartial.isEmpty {
-                    Text(isLocked ? "Hands-free · tap ⌃ or Stop · Esc to cancel" : "Listening — hold ⌃ to talk · Esc to cancel")
+                    Text(isLocked ? "Hands-free · tap \(shortcuts[.pushToTalk].label) or Stop · Esc to cancel" : "Listening — hold \(shortcuts[.pushToTalk].label) to talk · Esc to cancel")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(EchoTheme.textSecondary)
                         .lineLimit(1)
@@ -121,7 +122,7 @@ public struct FloatingPillView: View {
                         .shadow(color: EchoTheme.recordingRed.opacity(0.3), radius: 3, y: 1)
                     }
                     .buttonStyle(AtelierButtonStyle())
-                    .help("Finish & transcribe (⌃)")
+                    .help("Finish & transcribe (\(shortcuts[.pushToTalk].label))")
                 }
 
             case .transcribing:

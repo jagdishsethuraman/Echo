@@ -1,6 +1,7 @@
 import SwiftUI
 
 public struct TranscriptTimelineView: View {
+    @ObservedObject private var shortcuts = KeyboardShortcuts.shared
     public let segments: [TranscriptSegment]
 
     public init(segments: [TranscriptSegment]) {
@@ -50,7 +51,7 @@ public struct TranscriptTimelineView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(EchoTheme.textSecondary)
 
-            Text("Start a meeting, or hold ⌃ Control to dictate.")
+            Text("Start a meeting, or hold \(shortcuts[.pushToTalk].label) to dictate.")
                 .font(EchoFont.caption)
                 .foregroundStyle(EchoTheme.textMuted)
         }

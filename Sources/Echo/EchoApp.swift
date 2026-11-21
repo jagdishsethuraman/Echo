@@ -104,7 +104,7 @@ struct EchoMain {
             coordinator.showMeetingStudio()
         }
         
-        print("Echo Speech Intelligence running. Hold ⌃ Control to dictate (or double-tap ⌃ to lock). Meeting Studio opened.")
+        print("Echo Speech Intelligence running. Hold \(KeyboardShortcuts.shared[.pushToTalk].label) to dictate. Meeting Studio opened.")
         withExtendedLifetime(delegate) { app.run() }
     }
 
