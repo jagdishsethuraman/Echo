@@ -194,24 +194,15 @@ struct HotkeyManagerTests {
         #expect(meetingCount.value == 1)
     }
 
-    @Test func focusedAppShortcutsAreLeftToTheMenu() {
+    @Test func focusedAppShortcutsAreHandledOnce() {
         let manager = HotkeyManager()
         let dictateCount = EventCounter()
         let meetingCount = EventCounter()
         manager.onToggleDictation = { dictateCount.increment() }
         manager.onToggleMeetingRecording = { meetingCount.increment() }
 
-        // The local monitor must not fire the shortcut callbacks: while Echo is
-        // frontmost, the menu key equivalent owns them. Handling both paths made
-        // ⇧⌘D/⇧⌘R toggle twice (INJ-05).
         manager.simulateLocalKeyShortcut(characters: "d", modifiers: [.command, .shift])
         manager.simulateLocalKeyShortcut(characters: "r", modifiers: [.command, .shift])
-        #expect(dictateCount.value == 0)
-        #expect(meetingCount.value == 0)
-
-        // The global path still fires exactly once.
-        manager.simulateKeyShortcut(characters: "d", modifiers: [.command, .shift])
-        manager.simulateKeyShortcut(characters: "r", modifiers: [.command, .shift])
         #expect(dictateCount.value == 1)
         #expect(meetingCount.value == 1)
     }

@@ -109,7 +109,9 @@ Echo automatically routes text through an intelligent injection cascade:
 | **`⇧⌘R`** | **Start/Stop Meeting** | Begin or conclude dual-channel meeting recording |
 | **`⌘Q`** | **Quit Echo** | Conclude audio streams and exit application |
 
-The `⇧⌘` chords require Accessibility access to work while another app is frontmost. When Echo itself is focused they are dispatched by the app menu.
+These are the defaults. Open **Meeting Studio → Keyboard Shortcuts** (the keyboard button) to change push-to-talk, dictation, copy, Studio, meeting recording, or to assign a shortcut for exporting the current meeting. Choose modifiers and a letter, digit, or Space. For modifier-only push-to-talk, choose **None** under Key. Select **Save** to apply immediately. **Restore Defaults** followed by **Save** restores the original bindings.
+
+Global shortcuts require Accessibility access while another app is frontmost. Choose combinations that your other apps and macOS leave available. Escape cancels push-to-talk; double-tap the configured push-to-talk combination for hands-free recording.
 
 ---
 

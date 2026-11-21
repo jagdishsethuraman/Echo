@@ -169,6 +169,9 @@ public final class AppCoordinator: ObservableObject {
             }
         }
         
+        hotkeyManager.onExportMeeting = { [weak self] in
+            Task { @MainActor in self?.exportLastMeetingMarkdown() }
+        }
         hotkeyManager.startMonitoring()
     }
     
@@ -347,7 +350,7 @@ public final class AppCoordinator: ObservableObject {
         lastDictationRecoveryText = nil
 
         if transcript.recoveredFromPreview {
-            let message = "Partial available. Copy with ⇧⌘C"
+            let message = "Partial available. Copy with \(KeyboardShortcuts.shared[.copy].label)"
             statusMessage = finalError.map { "Transcription failed: \($0.localizedDescription). \(message)" } ?? message
             floatingPill.updateState(.notice(message: message))
             return
@@ -369,13 +372,13 @@ public final class AppCoordinator: ObservableObject {
         case .accessibilityDirect:
             feedback = "Inserted at cursor"
         case .directTyping:
-            feedback = "Typing sent. Copy with ⇧⌘C"
+            feedback = "Typing sent. Copy with \(KeyboardShortcuts.shared[.copy].label)"
         case .syntheticPaste:
-            feedback = "Paste requested. Copy with ⇧⌘C"
+            feedback = "Paste requested. Copy with \(KeyboardShortcuts.shared[.copy].label)"
         case .partialTyping:
-            feedback = result.clipboardReady ? "Typing interrupted. Remainder copied" : "Typing interrupted. Copy remainder with ⇧⌘C"
+            feedback = result.clipboardReady ? "Typing interrupted. Remainder copied" : "Typing interrupted. Copy remainder with \(KeyboardShortcuts.shared[.copy].label)"
         case .clipboardOnly:
-            let recovery = result.clipboardReady ? "Copied to clipboard" : "Copy with ⇧⌘C"
+            let recovery = result.clipboardReady ? "Copied to clipboard" : "Copy with \(KeyboardShortcuts.shared[.copy].label)"
             feedback = result.focusChanged ? "Field changed or unavailable. \(recovery)" : recovery
         }
         statusMessage = feedback
