@@ -17,15 +17,16 @@ enum SnapshotHarness {
         let url = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
 
+        let pillSize = CGSize(width: FloatingPillPanel.listeningWidth + 24, height: 62)
+        for (name, text) in [("pill", "Hello, hello."), ("pill-long", "We should ship the updated meeting notes after everyone has reviewed the final version.")] {
+            render(pill(preview: text), size: pillSize, to: url.appendingPathComponent(name + ".png"))
+        }
+        if CommandLine.arguments.contains("--pill-only") { return true }
+
         render(
             studio,
             size: CGSize(width: 900, height: 620),
             to: url.appendingPathComponent("studio.png")
-        )
-        render(
-            pill,
-            size: CGSize(width: 440, height: 56),
-            to: url.appendingPathComponent("pill.png")
         )
         render(
             emptyStudio,
@@ -102,20 +103,20 @@ enum SnapshotHarness {
         .frame(width: 840, height: 560)
     }
 
-    private static var pill: some View {
+    private static func pill(preview: String) -> some View {
         ZStack {
             desktop
             FloatingPillView(
                 state: .listening(
                     audioLevel: 0.55,
-                    livePartial: "We should ship the frosted",
+                    livePartial: preview,
                     isLocked: true,
                     elapsedSeconds: 74
                 )
             )
             .padding(12)
         }
-        .frame(width: 440, height: 56)
+        .frame(width: FloatingPillPanel.listeningWidth + 24, height: 62)
     }
 
     private static func render<V: View>(_ view: V, size: CGSize, to url: URL) {
