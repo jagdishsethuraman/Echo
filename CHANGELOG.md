@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-20
+
+### Added
+- **Persistent action items & decisions (#6):** Added dedicated `action_items` table in SQLite (`user_version = 3`) with stable UUIDs and `is_done` flags. Action items and their completion states persist across app restarts and view recreations, completely isolated by session ID.
+- **Incremental NLP extraction caching (#24):** Introduced `IncrementalNotesExtractor` caching decisions and action items by transcript segment UUID, replacing $O(N)$ full-meeting text re-scans with $O(1)$ lookups on segment arrival.
+- **Process-isolated scratch temp directories (#19):** Audio scratch files are now namespaced under `tmp_audio/pid_<PID>/` with 0700/0600 POSIX permissions. Orphan cleanup verifies process liveness (`kill(pid, 0)`), preventing secondary instances or self-tests from sweeping live recording audio.
+- **Vocabulary seeding metadata flag (#23):** SQLite schema now includes persistent `metadata` key-value table (`user_version = 4`), recording initial lexicon setup so clearing dictionary terms never resurrects defaults on relaunch.
+- **Automated bundle assembly in CI (#21):** CI workflow now runs `./assemble_app.sh`, validating release binary assembly, code signing, and bundle invariant self-tests on macOS 15 runners.
+
+### Changed
+- **Unified off-main export generator (#20):** Meeting Studio Copy, Studio Export, and History Export share a single document generator (`MeetingSession.exportMarkdown`); database queries and file writes execute asynchronously off the main actor; export filenames append 8-character session UUID slugs (`echo_meeting_<timestamp>_<slug>.md`) preventing same-second file collisions.
+- **Clean-start documentation (#22):** Documented fresh-clone SwiftPM build instructions, engine path defaults overrides (`echo.runnerPath`), and macOS permission guidelines in `README.md`.
+
+### Fixed
+- **Dictation focus validation before injection (#4):** Target application bundle ID is captured when dictation begins. If the user changes active windows during inference, text is safely diverted to the clipboard with an informative HUD alert, preventing private text delivery into unintended apps.
+- **Inference backlog budget bounding (#7):** Enforces a maximum pending queue budget (120s / 3.84MB PCM) in `TranscriptionService`, rejecting excessive submissions with typed `queueOverloaded` error to prevent unbounded memory growth.
+- **Truncated preview delivery guard (#9):** When final full-audio inference returns empty, Echo labels the fallback text with `[Partial]` and bounds its duration to the 12s preview window, preventing truncated text from appearing as a full-duration transcript.
+- **AudioHub hardware retain serialization (#16):** Serialized microphone and system audio hardware start/stop transitions with mutex locks, ensuring concurrent retains wait for initialization and failed starts never leave orphaned positive retain counts.
+- **Sample-accurate VAD silence accounting & voiced gating (#18):** `VoiceActivityDetector` now accumulates exact silent and voiced sample counts across variable callback chunk sizes, eliminating buffer-size timing jitter and discarding brief noise impulses.
+- **Production smoke test bundle invariants (#21):** `--test` self-test now verifies `CFBundleIdentifier`, `CFBundleExecutable`, window style masks, and returns exit code 1 on failure.
+
 ## [1.4.2] - 2026-11-20
 
 ### Added
