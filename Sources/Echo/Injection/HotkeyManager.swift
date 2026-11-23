@@ -26,7 +26,11 @@ public final class HotkeyManager: @unchecked Sendable {
     public private(set) var isChorded: Bool = false
     public private(set) var isLocked: Bool = false
     private var keyDownTime: TimeInterval = 0
-    private var pendingReleaseWorkItem: DispatchWorkItem?
+    private var holdTimer: DispatchWorkItem?
+    private var holdStarted = false
+    private var lastTap: (release: TimeInterval, binding: EchoShortcut)?
+    private static let holdDelay: TimeInterval = 0.30
+    private static let doubleTapInterval: TimeInterval = 0.38
     
     public var onExportMeeting: (() -> Void)?
     private let shortcuts: KeyboardShortcuts
@@ -95,7 +99,7 @@ public final class HotkeyManager: @unchecked Sendable {
             accessibilityGranted = granted
             if !granted {
                 // A release event may now be unreachable. Finish any held dictation.
-                let shouldFinish = isLocked || (isKeyDown && !isChorded) || pendingReleaseWorkItem != nil
+                let shouldFinish = isLocked || holdStarted
                 resetHoldState()
                 if shouldFinish {
                     onLockStateChanged?(false)
@@ -106,8 +110,10 @@ public final class HotkeyManager: @unchecked Sendable {
     }
 
     private func resetHoldState() {
-        pendingReleaseWorkItem?.cancel()
-        pendingReleaseWorkItem = nil
+        holdTimer?.cancel()
+        holdTimer = nil
+        lastTap = nil
+        holdStarted = false
         isKeyDown = false
         isChorded = false
         isLocked = false
@@ -139,6 +145,7 @@ public final class HotkeyManager: @unchecked Sendable {
         let flags = event.modifierFlags.intersection(EchoShortcut.supported)
         let prior = previousFlags
         previousFlags = flags
+        if !flags.subtracting(binding.flags).isEmpty { lastTap = nil }
         if isKeyDown {
             if !flags.subtracting(binding.flags).isEmpty { interruptHold() }
             if !flags.isSuperset(of: binding.flags) {
@@ -152,69 +159,52 @@ public final class HotkeyManager: @unchecked Sendable {
 
     private func updateHold(pressed: Bool, at timestamp: TimeInterval) {
         let eventTime = timestamp > 0 ? timestamp : ProcessInfo.processInfo.systemUptime
-        if pressed && !isKeyDown {
+        if pressed {
+            guard !isKeyDown else { return }
             activeBinding = shortcuts[.pushToTalk]
+            keyDownTime = eventTime
             isKeyDown = true
             isChorded = false
-            keyDownTime = eventTime
-            
-            // 1. If currently in locked hands-free mode, tapping Control unlocks and stops
-            if isLocked {
-                isChorded = true // Suppress the release after the tap that ends lock mode.
-                isLocked = false
-                pendingReleaseWorkItem?.cancel()
-                pendingReleaseWorkItem = nil
-                onLockStateChanged?(false)
-                onKeyUp?()
-                return
+            guard !isLocked else { return }
+            let timer = DispatchWorkItem { [weak self] in
+                guard let self, self.isKeyDown, !self.isChorded else { return }
+                self.holdStarted = true
+                self.lastTap = nil
+                self.onKeyDown?()
             }
-            
-            // 2. Check if this is the 2nd tap of a rapid double-tap (<380ms from 1st release)
-            if let pending = pendingReleaseWorkItem, !pending.isCancelled {
-                pending.cancel()
-                pendingReleaseWorkItem = nil
+            holdTimer = timer
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDelay, execute: timer)
+            return
+        }
+
+        guard isKeyDown, let binding = activeBinding else { return }
+        holdTimer?.cancel()
+        holdTimer = nil
+        isKeyDown = false
+        activeBinding = nil
+        if isChorded {
+            isChorded = false
+        } else if isLocked || holdStarted {
+            let wasLocked = isLocked
+            holdStarted = false
+            isLocked = false
+            if wasLocked { onLockStateChanged?(false) }
+            onKeyUp?()
+        } else if eventTime - keyDownTime < Self.holdDelay {
+            if let tap = lastTap, tap.binding == binding, keyDownTime >= tap.release,
+               keyDownTime - tap.release <= Self.doubleTapInterval {
+                lastTap = nil
                 isLocked = true
+                onKeyDown?()
                 onLockStateChanged?(true)
-                // Recording was already started on 1st tap; seamless continuation in lock mode!
-                return
+            } else {
+                lastTap = (eventTime, binding)
             }
-            
-            // 3. Normal initial press: start dictation
-            onKeyDown?()
-            
-        } else if !pressed && isKeyDown {
-            activeBinding = nil
-            isKeyDown = false
-            let holdDuration = eventTime - keyDownTime
-            
-            // If chorded with an alphanumeric/symbol key, ignore release (no dictation or lock)
-            if isChorded {
-                isChorded = false
-                return
-            }
-            
-            // If in locked hands-free mode, releasing the key does NOT stop recording
-            if isLocked {
-                return
-            }
-            
-            // If held for longer than 350ms, it is standard push-to-talk: finish immediately
-            if holdDuration > 0.35 {
-                onKeyUp?()
-                return
-            }
-            
-            // If tapped briefly (<350ms), wait 380ms to see if a 2nd tap comes to activate Lock Mode
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self = self, !self.isLocked, !self.isChorded else { return }
-                self.pendingReleaseWorkItem = nil
-                self.onKeyUp?()
-            }
-            pendingReleaseWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.38, execute: workItem)
+        } else {
+            lastTap = nil
         }
     }
-    
+
     // Consume locally handled shortcuts so the menu cannot dispatch them twice.
     @discardableResult
     func routeKeyEvent(_ event: NSEvent) -> Bool {
@@ -253,49 +243,44 @@ public final class HotkeyManager: @unchecked Sendable {
     }
 
     private func interruptHold() {
+        lastTap = nil
         guard isKeyDown, !isChorded else { return }
         isChorded = true
-        pendingReleaseWorkItem?.cancel()
-        pendingReleaseWorkItem = nil
-        onCancel?()
+        holdTimer?.cancel()
+        holdTimer = nil
+        if holdStarted {
+            holdStarted = false
+            onCancel?()
+        }
     }
 
     public func handleKeyDown(_ event: NSEvent) {
-        let keyCode = event.keyCode
-        
-        // Escape key (kVK_Escape = 53): cancel recording immediately
-        if keyCode == 53 {
-            if isKeyDown || isLocked || pendingReleaseWorkItem != nil {
-                cancel()
-            }
-            return
+        if event.keyCode == 53 {
+            cancel()
+        } else {
+            interruptHold()
         }
-        
-        interruptHold()
     }
-    
+
     public func cancel() {
-        let wasActive = isKeyDown || isLocked || pendingReleaseWorkItem != nil
-        activeBinding = nil
-        heldKeyCode = nil
-        pendingReleaseWorkItem?.cancel()
-        pendingReleaseWorkItem = nil
-        isKeyDown = false
-        isLocked = false
-        isChorded = false
-        if wasActive {
+        let wasRecording = holdStarted || isLocked
+        resetHoldState()
+        if wasRecording {
             onLockStateChanged?(false)
             onCancel?()
         }
     }
-    
+
     public func unlock() {
-        pendingReleaseWorkItem?.cancel()
-        pendingReleaseWorkItem = nil
+        holdTimer?.cancel()
+        holdTimer = nil
+        lastTap = nil
+        holdStarted = false
         isLocked = false
+        if isKeyDown { isChorded = true }
         onLockStateChanged?(false)
     }
-    
+
     // MARK: - Programmatic Triggers for Unit Testing
     
     public func simulateFlagsChanged(flags: NSEvent.ModifierFlags, timeOffset: TimeInterval = 0) {

@@ -125,23 +125,61 @@ struct FocusedDictationField: Equatable {
         lhs.pid == rhs.pid && CFEqual(lhs.element, rhs.element)
     }
 
-    @MainActor static func current() -> Self? {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              let element = TextInjector.accessibilityFocusedElement(),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else {
-            return nil
+    // Chromium editors may expose only their window until an assistive client
+    // requests the editable accessibility tree. Prime it before dictation begins.
+    @MainActor static func prepareEditor(_ app: NSRunningApplication?) {
+        guard let app, let id = app.bundleIdentifier,
+              ["com.openai.codex", "com.anthropic.claudefordesktop", "com.microsoft.teams2"].contains(id),
+              AXIsProcessTrusted() else { return }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        // Electron and Chromium shells expose different activation attributes.
+        for attribute in ["AXManualAccessibility", "AXEnhancedUserInterface"] {
+            if AXUIElementSetAttributeValue(root, attribute as CFString, kCFBooleanTrue) == .success { break }
         }
-
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else { return nil }
-
-        // An AX web area or window may represent several otherwise unidentified fields.
-        var role: AnyObject?
-        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
-              let role = role as? String,
-              [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(role) else { return nil }
-        return Self(pid: pid, element: element)
     }
+
+    @MainActor static func current() -> Self? {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
+        // Ask the owning app which field it focuses. A web editor's AX element
+        // can belong to its renderer, while keyboard events go to the host PID.
+        let root = AXUIElementCreateApplication(pid)
+        let element = TextInjector.accessibilityFocusedElement(in: root)
+        func field(_ candidate: AXUIElement?) -> Self? {
+            guard let candidate, let editor = editableField(for: candidate),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+            return Self(pid: pid, element: editor)
+        }
+        if let scoped = field(element) { return scoped }
+        guard let system = TextInjector.accessibilityFocusedElement() else { return nil }
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(system, &owner) == .success, owner == pid else { return nil }
+        return field(system)
+    }
+
+    private static func attribute(_ element: AXUIElement, _ key: String) -> AnyObject? {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else { return nil }
+        return value
+    }
+
+    static func editableField(for focused: AXUIElement,
+                              read: (AXUIElement, String) -> AnyObject? = attribute) -> AXUIElement? {
+        func isEditor(_ element: AXUIElement) -> Bool {
+            guard let role = read(element, kAXRoleAttribute) as? String,
+                  read(element, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole else { return false }
+            if [kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole].contains(role) { return true }
+            return role == kAXGroupRole && read(element, "AXEditable") as? Bool == true
+        }
+        if isEditor(focused) { return focused }
+        // Chromium can focus an inline node and name its owning editable field.
+        // Never promote a whole web area or window to a delivery target.
+        guard read(focused, kAXSubroleAttribute) as? String != kAXSecureTextFieldSubrole,
+              let value = read(focused, "AXEditableAncestor"),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let ancestor = value as! AXUIElement
+        return isEditor(ancestor) ? ancestor : nil
+    }
+
 }
 
 // In-memory mock pasteboard for hermetic testing
@@ -403,10 +441,10 @@ public final class TextInjector: @unchecked Sendable {
         return processed
     }
     
-    static func accessibilityFocusedElement() -> AXUIElement? {
+    static func accessibilityFocusedElement(in root: AXUIElement = AXUIElementCreateSystemWide()) -> AXUIElement? {
         var value: AnyObject?
         let result = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(),
+            root,
             kAXFocusedUIElementAttribute as CFString,
             &value
         )

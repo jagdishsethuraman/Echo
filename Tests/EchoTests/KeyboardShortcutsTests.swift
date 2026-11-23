@@ -32,26 +32,27 @@ struct KeyboardShortcutsTests {
                          isARepeat: repeatKey, keyCode: 40)!
     }
 
-    @Test func customHoldTracksKeyUpRepeatAndEarlyModifierRelease() {
-        withStore { store, _ in
-            let manager = HotkeyManager(shortcuts: store)
-            var draft = store.bindings
-            draft[.pushToTalk] = EchoShortcut([.option, .control], "k")
-            store.save(draft)
-            var starts = 0, finishes = 0
-            manager.onKeyDown = { starts += 1 }
-            manager.onKeyUp = { finishes += 1 }
-            manager.simulateFlagsChanged(flags: [.control, .option])
-            #expect(starts == 0)
-            manager.routeKeyEvent(event(.keyDown, time: 1000))
-            manager.routeKeyEvent(event(.keyDown, time: 1000.1, repeatKey: true))
-            manager.routeKeyEvent(event(.keyUp, time: 1000.5))
-            manager.routeKeyEvent(event(.keyDown, time: 1001))
-            manager.simulateFlagsChanged(flags: .control, timeOffset: 1.5)
-            manager.routeKeyEvent(event(.keyUp, time: 1001.6))
-            #expect(starts == 2)
-            #expect(finishes == 2)
-        }
+    @MainActor @Test func customHoldTracksKeyUpRepeatAndEarlyModifierRelease() async throws {
+        let store = KeyboardShortcuts(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let manager = HotkeyManager(shortcuts: store)
+        var draft = store.bindings
+        draft[.pushToTalk] = EchoShortcut([.option, .control], "k")
+        store.save(draft)
+        var starts = 0, finishes = 0
+        manager.onKeyDown = { starts += 1 }
+        manager.onKeyUp = { finishes += 1 }
+        manager.simulateFlagsChanged(flags: [.control, .option])
+        #expect(starts == 0)
+        manager.routeKeyEvent(event(.keyDown, time: 1000))
+        manager.routeKeyEvent(event(.keyDown, time: 1000.1, repeatKey: true))
+        try await Task.sleep(for: .milliseconds(400))
+        manager.routeKeyEvent(event(.keyUp, time: 1000.5))
+        manager.routeKeyEvent(event(.keyDown, time: 1001))
+        try await Task.sleep(for: .milliseconds(400))
+        manager.simulateFlagsChanged(flags: .control, timeOffset: 1.5)
+        manager.routeKeyEvent(event(.keyUp, time: 1001.6))
+        #expect(starts == 2)
+        #expect(finishes == 2)
     }
 
     @Test func modifierOnlyBindingAndCustomCommandUseExactModifiers() {

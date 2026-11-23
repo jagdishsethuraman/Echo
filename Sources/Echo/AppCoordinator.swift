@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import AVFoundation
 import Foundation
 
@@ -29,6 +30,7 @@ public final class AppCoordinator: ObservableObject {
     private var dictationRetentionTimer: Timer?
 
     private let dictation = DictationLifecycle()
+    private var editorActivation: AnyCancellable?
     private var partialTimer: Timer?
     private var durationTimer: Timer?
     private var micLevelToken: UUID?
@@ -68,6 +70,12 @@ public final class AppCoordinator: ObservableObject {
             transcriptionService: service
         )
         
+        editorActivation = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .receive(on: RunLoop.main)
+            .sink { notification in
+                FocusedDictationField.prepareEditor(notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+            }
+        FocusedDictationField.prepareEditor(NSWorkspace.shared.frontmostApplication)
         setupHotkeyWiring()
         setupPillWiring()
         setupAudioErrorWiring()

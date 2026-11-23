@@ -12,7 +12,7 @@ struct ShortcutSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Keyboard Shortcuts").font(.title2.bold())
-            Text("Hold your Push to Talk shortcut to dictate. Double-tap it for hands-free dictation.")
+            Text("Hold for 0.3 seconds to dictate. A single tap does nothing. Double-tap to speak hands-free, then tap once to finish.")
                 .foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
                 GridRow { Text("Action"); Text("Modifiers"); Text("Key") }.font(.headline)
