@@ -12,13 +12,31 @@ final class AppUpdates: NSObject, SPUUpdaterDelegate {
         controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
     }
 
-    func addMenuItem(to menu: NSMenu) {
+    static func verifyStartup() throws {
+        let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+        try controller.updater.start()
+    }
+
+    func addMenuItems(to menu: NSMenu) {
         guard let controller else { return }
         let item = NSMenuItem(title: "Check for Updates…",
                               action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
                               keyEquivalent: "")
         item.target = controller
         menu.addItem(item)
+
+        let automatic = NSMenuItem(title: "Automatically Check for Updates",
+                                   action: #selector(toggleAutomaticChecks(_:)),
+                                   keyEquivalent: "")
+        automatic.target = self
+        automatic.state = controller.updater.automaticallyChecksForUpdates ? .on : .off
+        menu.addItem(automatic)
+    }
+
+    @objc private func toggleAutomaticChecks(_ sender: NSMenuItem) {
+        guard let updater = controller?.updater else { return }
+        updater.automaticallyChecksForUpdates.toggle()
+        sender.state = updater.automaticallyChecksForUpdates ? .on : .off
     }
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,

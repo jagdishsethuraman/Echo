@@ -120,6 +120,13 @@ struct EchoMain {
               bundle.url(forResource: "AppIcon", withExtension: "icns") != nil else {
             throw failure("Run this check from an assembled Echo.app containing its executable, Info.plist and AppIcon.")
         }
+        if arguments.contains("--verify-updater") {
+            guard bundle.object(forInfoDictionaryKey: "SUPublicEDKey") is String else {
+                throw failure("The updater check requires a configured Sparkle public key.")
+            }
+            try await AppUpdates.verifyStartup()
+            print("Sparkle updater startup passed.")
+        }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("echo-smoke-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }

@@ -35,6 +35,16 @@ jobs:
       - name: Assemble and verify app bundle
         run: ./assemble_app.sh
 
+      - name: Verify packaged Sparkle startup with a disposable key
+        run: |
+          probe="$RUNNER_TEMP/updater-check/Echo.app"
+          mkdir -p "$(dirname "$probe")"
+          ditto Echo.app "$probe"
+          key=$(swift -e 'import CryptoKit; import Foundation; print(Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString())')
+          scripts/configure-updater.sh "$probe/Contents/Info.plist" "$key"
+          codesign --force --sign - "$probe"
+          "$probe/Contents/MacOS/Echo" --test --verify-updater -SUEnableAutomaticChecks NO
+
       - name: Install the Apple Silicon speech runtime for release verification
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/setup-python@v5

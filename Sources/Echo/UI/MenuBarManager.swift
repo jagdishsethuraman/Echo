@@ -220,7 +220,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
 
         menu.addItem(NSMenuItem.separator())
         
-        AppUpdates.shared.addMenuItem(to: menu)
+        AppUpdates.shared.addMenuItems(to: menu)
 
         // Quit
         let quitItem = NSMenuItem(

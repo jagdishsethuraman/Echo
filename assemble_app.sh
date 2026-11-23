@@ -19,9 +19,7 @@ if [[ -n "${ECHO_RELEASE_VERSION:-}" ]]; then
     plist="$contents/Info.plist"
     plutil -replace CFBundleShortVersionString -string "$ECHO_RELEASE_VERSION" "$plist"
     plutil -replace CFBundleVersion -string "$ECHO_RELEASE_VERSION" "$plist"
-    plutil -insert SUPublicEDKey -string "$SPARKLE_PUBLIC_KEY" "$plist"
-    plutil -insert SUFeedURL -string 'https://github.com/jagdishsethuraman/Echo/releases/latest/download/appcast.xml' "$plist"
-    plutil -insert SURequireSignedFeed -bool YES "$plist"
+    scripts/configure-updater.sh "$plist" "$SPARKLE_PUBLIC_KEY"
     framework="$contents/Frameworks/Sparkle.framework"
     nested="$framework/Versions/B"
     sign=(codesign --force --timestamp --options runtime --sign "$ECHO_SIGN_IDENTITY")
@@ -35,7 +33,11 @@ else
 fi
 
 codesign --verify --deep --strict --verbose=2 "$app"
-"$contents/MacOS/Echo" --test
+if [[ -n "${ECHO_RELEASE_VERSION:-}" ]]; then
+    "$contents/MacOS/Echo" --test --verify-updater -SUEnableAutomaticChecks NO
+else
+    "$contents/MacOS/Echo" --test
+fi
 if [[ -e Echo.app ]]; then mv Echo.app "$stage/previous.app"; fi
 mv "$app" Echo.app
 echo "Assembled and verified Echo.app"
