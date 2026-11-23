@@ -13,7 +13,11 @@ public final class HotkeyManager: @unchecked Sendable {
     public var onCopyLastDictation: (() -> Void)?
     public var onToggleMeetingRecording: (() -> Void)?
     
-    private var globalFlagsMonitor: Any?
+    @Published private(set) var accessibilityGranted = false
+    private var permissionTimer: Timer?
+    private let checkTrust: () -> Bool
+    private let addGlobalMonitor: (NSEvent.EventTypeMask, @escaping (NSEvent) -> Void) -> Any?
+    private let removeGlobalMonitor: (Any) -> Void
     private var localFlagsMonitor: Any?
     private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
@@ -31,7 +35,15 @@ public final class HotkeyManager: @unchecked Sendable {
     private var previousFlags: NSEvent.ModifierFlags = []
 
     public convenience init() { self.init(shortcuts: .shared) }
-    init(shortcuts: KeyboardShortcuts) { self.shortcuts = shortcuts }
+    init(shortcuts: KeyboardShortcuts,
+         checkTrust: @escaping () -> Bool = { AXIsProcessTrusted() },
+         addGlobalMonitor: @escaping (NSEvent.EventTypeMask, @escaping (NSEvent) -> Void) -> Any? = NSEvent.addGlobalMonitorForEvents,
+         removeGlobalMonitor: @escaping (Any) -> Void = NSEvent.removeMonitor) {
+        self.shortcuts = shortcuts
+        self.checkTrust = checkTrust
+        self.addGlobalMonitor = addGlobalMonitor
+        self.removeGlobalMonitor = removeGlobalMonitor
+    }
     
     deinit {
         stopMonitoring()
@@ -44,40 +56,76 @@ public final class HotkeyManager: @unchecked Sendable {
     
     /// Start listening for global Push-to-Talk shortcut (Default: Control key, double-tap to lock, Esc to cancel)
     public func startMonitoring() {
-        stopMonitoring()
-        
-        // Modifier-only bindings arrive as flag transitions.
-        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
-            self?.handleFlagsChanged(event)
+        guard permissionTimer == nil else { return }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshAccessibility()
         }
+        timer.tolerance = 0.1
+        permissionTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        refreshAccessibility(initial: true)
+
         localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
             self?.handleFlagsChanged(event)
             return event
         }
         
         let keyEvents: NSEvent.EventTypeMask = [.keyDown, .keyUp]
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: keyEvents) { [weak self] event in
-            _ = self?.routeKeyEvent(event)
-        }
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: keyEvents) { [weak self] event in
             self?.routeKeyEvent(event) == true ? nil : event
         }
     }
     
-    public func stopMonitoring() {
+    func refreshAccessibility(initial: Bool = false) {
+        guard permissionTimer != nil else { return }
+        let granted = checkTrust()
+        let changed = granted != accessibilityGranted
+        guard initial || changed || (granted && globalKeyMonitor == nil) else { return }
+
+        // AppKit can return a monitor before trust is granted that never receives keys.
+        if let monitor = globalKeyMonitor { removeGlobalMonitor(monitor) }
+        globalKeyMonitor = addGlobalMonitor([.flagsChanged, .keyDown, .keyUp]) { [weak self] event in
+            if event.type == .flagsChanged {
+                self?.handleFlagsChanged(event)
+            } else {
+                _ = self?.routeKeyEvent(event)
+            }
+        }
+        if changed {
+            accessibilityGranted = granted
+            if !granted {
+                // A release event may now be unreachable. Finish any held dictation.
+                let shouldFinish = isLocked || (isKeyDown && !isChorded) || pendingReleaseWorkItem != nil
+                resetHoldState()
+                if shouldFinish {
+                    onLockStateChanged?(false)
+                    onKeyUp?()
+                }
+            }
+        }
+    }
+
+    private func resetHoldState() {
         pendingReleaseWorkItem?.cancel()
         pendingReleaseWorkItem = nil
-        
-        if let g = globalFlagsMonitor {
-            NSEvent.removeMonitor(g)
-            globalFlagsMonitor = nil
-        }
+        isKeyDown = false
+        isChorded = false
+        isLocked = false
+        heldKeyCode = nil
+        activeBinding = nil
+        previousFlags = []
+    }
+
+    public func stopMonitoring() {
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        resetHoldState()
         if let l = localFlagsMonitor {
             NSEvent.removeMonitor(l)
             localFlagsMonitor = nil
         }
         if let g = globalKeyMonitor {
-            NSEvent.removeMonitor(g)
+            removeGlobalMonitor(g)
             globalKeyMonitor = nil
         }
         if let l = localKeyMonitor {

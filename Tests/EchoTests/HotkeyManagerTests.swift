@@ -23,6 +23,45 @@ private final class EventCounter: @unchecked Sendable {
 @Suite("HotkeyManager", .serialized)
 struct HotkeyManagerTests {
     
+    @MainActor @Test func runningMonitorReattachesAfterGrantAndFinishesHoldOnRevocation() async throws {
+        var trusted = false
+        var handlers: [(NSEvent) -> Void] = []
+        var removed: [Int] = []
+        let shortcuts = KeyboardShortcuts(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let manager = HotkeyManager(shortcuts: shortcuts, checkTrust: { trusted }, addGlobalMonitor: { _, handler in
+            handlers.append(handler)
+            return handlers.count
+        }, removeGlobalMonitor: { removed.append($0 as! Int) })
+        var starts = 0, finishes = 0
+        manager.onKeyDown = { starts += 1 }
+        manager.onKeyUp = { finishes += 1 }
+        manager.startMonitoring()
+        defer { manager.stopMonitoring() }
+        trusted = true
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !manager.accessibilityGranted && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(manager.accessibilityGranted)
+        manager.refreshAccessibility()
+        #expect(handlers.count == 2)
+        #expect(removed == [1])
+        let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: .control,
+                                     timestamp: 1, windowNumber: 0, context: nil, characters: "",
+                                     charactersIgnoringModifiers: "", isARepeat: false, keyCode: 59)!
+        handlers.last?(event)
+        #expect(starts == 1)
+        trusted = false
+        manager.refreshAccessibility()
+        #expect(finishes == 1)
+        #expect(!manager.isKeyDown)
+        manager.stopMonitoring()
+        trusted = true
+        manager.refreshAccessibility()
+        #expect(handlers.count == 3)
+        #expect(removed == [1, 2, 3])
+    }
+
     @Test func pushToTalkHoldAndRelease() async {
         let manager = HotkeyManager()
         let downCount = EventCounter()
