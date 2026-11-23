@@ -83,18 +83,26 @@ Echo automatically routes text through an intelligent injection cascade:
 1. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes, without touching the clipboard.
 2. **Clipboard Placement + Synthetic Cmd+V Paste:** Writes the transcript to `NSPasteboard.general`, pastes it with `.maskCommand` isolation and a settle delay, then restores the previous clipboard contents (all pasteboard items).
 3. **Direct Unicode Typing:** Types complete Unicode graphemes via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events, again restoring the previous clipboard afterwards.
-4. **Manual Fallback:** If every synthetic path fails, the transcript stays on the clipboard so it is never lost.
+4. **Focused Target Protection:** Captures focused UI element and process ID prior to injection. If the user changes active windows during transcription, output is safely held on the clipboard with an informative HUD alert, preventing private text delivery into unintended apps.
+5. **Interrupted Typing Recovery:** When synthetic typing is interrupted or cancelled, the unposted remainder suffix is written to the clipboard at a clean Unicode grapheme boundary rather than duplicating or discarding words.
+6. **Origin-Bound Lifecycle:** `DictationLifecycle` coordinates audio capture, streaming previews, and delivery tokens, preventing stale or overlapping dictations from polluting new sessions.
+7. **Manual Fallback:** If every synthetic path fails, the transcript stays on the clipboard so it is never lost.
 
 ### 👥 Bot-Free Dual-Channel Meeting Studio
 - **Acoustic Loopback:** Uses macOS 14+ `ScreenCaptureKit` (`capturesAudio = true`, `excludesCurrentProcessAudio = true`) to capture meeting audio with zero acoustic echo.
-- **Rolling Energy VAD:** Automatically segments speech upon 600ms natural silence boundaries.
+- **Independent Multi-Consumer AudioHub:** Hardware-level retain counting and mutex locks allow microphone and ScreenCaptureKit loopback streams to be started, stopped, and shared concurrently without race conditions or orphaned audio handles.
+- **Sample-Accurate VAD & Onset Timing:** Rolling energy VAD accumulates exact sample counts across variable callback buffers to eliminate timing jitter, stamping onset timestamps for chronological accuracy.
 - **Graphite Frost Interface:** Native `NSVisualEffectView` frosted dark-gray surfaces with a cool frost-blue accent, using a 62/38 split layout separating conversation streams from live AI notes.
+- **Incremental Notes & Persistent Tasks:** Action items and key decisions persist across launches in SQLite (`action_items` table). `IncrementalNotesExtractor` caches items by segment UUID ($O(1)$ lookups) instead of rescanning entire transcripts.
 - **Markdown Notes Export:** Saves the current session as Markdown and writes a `.md` file to the configurable export folder (default `~/Documents/Echo Meetings`).
+- **Process-Isolated Temp Storage:** Inference audio files live in private `tmp_audio/pid_<PID>/` directories (0700/0600 POSIX permissions). Orphan sweep verifies PID liveness before deletion.
 
 ### 🧠 Word Memory & Speech Lexicon Engine
 - **Persistent Vocabulary:** Built-in SQLite database stores phonetic replacements (e.g. `"phone on"` → `"Phonon"`, `"anti gravity"` → `"Antigravity"`).
 - **Whole-Word Boundary Accuracy:** Regular expressions (`\b(pattern)\b`) protect against destructive sub-word replacements.
 - **In-App Management:** Click the **`Memory (n)`** button in Meeting Studio to add custom terms, view active hotwords, or remove entries.
+- **Configurable Dictation Retention:** Standalone dictations can be set to Keep Forever, 30 Days, 7 Days, or Do Not Keep via the menu.
+- **Resilient & Degraded Storage Modes:** SQLite migrations run in immediate transactions with automatic rollback. If durable storage is locked or unreadable, Echo alerts the user and provides an optional isolated in-memory temporary session mode.
 
 ---
 
@@ -122,44 +130,49 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
                                   │   ⌃ Control Push-to-Talk    │
                                   └──────────────┬──────────────┘
                                                  │
-                  ┌──────────────────────────────┴──────────────────────────────┐
-                  ▼                                                             ▼
-     ┌────────────────────────┐                                   ┌───────────────────────────┐
-     │  Floating HUD Panel    │                                   │    Meeting Studio Window  │
-     │  • Non-activating NSPanel│                                  │    • Graphite Frost glass │
-     │  • Live 650ms Stream   │                                   │    • 62/38 Split Timeline │
-     │  • Audio Waveform VU   │                                   │    • Word Memory Drawer   │
-     └────────────┬───────────┘                                   └─────────────┬─────────────┘
-                  │                                                             │
-                  └──────────────────────┬──────────────────────────────────────┘
-                                         ▼
-                      ┌────────────────────────────────────┐
-                      │          AppCoordinator            │
-                      └──────────────────┬─────────────────┘
-                                         │
-                 ┌───────────────────────┴───────────────────────┐
-                 ▼                                               ▼
-   ┌───────────────────────────┐                   ┌───────────────────────────┐
-   │ CoreAudio / ScreenCapture │                   │ Phonon-2 Local STT Engine │
-   │ • 16kHz Mic Tap           │                   │ • FastConformer-TDT INT6  │
-   │ • Speaker Loopback        │                   │ • CPU (configurable)      │
-   │ • Rolling 0.6s Energy VAD │                   │ • Local inference         │
-   └─────────────┬─────────────┘                   └─────────────┬─────────────┘
-                 │                                               │
-                 └───────────────────────┬───────────────────────┘
-                                         ▼
-                        ┌─────────────────────────────────┐
-                        │      WordMemoryEngine           │
-                        │ • SQLite3 Lexicon (WAL Mode)    │
-                        │ • Word-Boundary Sanitization    │
-                        └────────────────┬────────────────┘
-                                         ▼
-                        ┌─────────────────────────────────┐
-                        │       TextInjector Cascade      │
-                        │ 1. AXDirect Attribute Insert    │
-                        │ 2. Cmd+V Paste (restored)       │
-                        │ 3. Unicode Typing Fallback      │
-                        └─────────────────────────────────┘
+                   ┌─────────────────────────────┴─────────────────────────────┐
+                   ▼                                                           ▼
+      ┌────────────────────────┐                                 ┌───────────────────────────┐
+      │   DictationLifecycle   │                                 │   MeetingCoordinator      │
+      │ • Recording ID Token   │                                 │ • Dual-channel timeline   │
+      │ • Target Focus Check   │                                 │ • IncrementalNotesExtractor│
+      │ • Preview & Remainder  │                                 │ • Persistent Action Items │
+      └────────────┬───────────┘                                 └─────────────┬─────────────┘
+                   │                                                           │
+                   └──────────────────────┬────────────────────────────────────┘
+                                          ▼
+                       ┌────────────────────────────────────┐
+                       │          AppCoordinator            │
+                       └──────────────────┬─────────────────┘
+                                          │
+                  ┌───────────────────────┴───────────────────────┐
+                  ▼                                               ▼
+    ┌───────────────────────────┐                   ┌───────────────────────────┐
+    │         AudioHub          │                   │ Phonon-2 Local STT Engine │
+    │ • Multi-Consumer Retains  │                   │ • Process-Isolated Audio  │
+    │ • 16kHz Mic Tap           │                   │ • FastConformer-TDT INT6  │
+    │ • ScreenCaptureKit Loop   │                   │ • Configurable MLX / CPU  │
+    │ • Sample-Accurate VAD     │                   │ • Bounded Queue Budget    │
+    └─────────────┬─────────────┘                   └─────────────┬─────────────┘
+                  │                                               │
+                  └───────────────────────┬───────────────────────┘
+                                          ▼
+                         ┌─────────────────────────────────┐
+                         │   WordMemory & SQLite Storage   │
+                         │ • SQLite3 WAL Mode + Retries    │
+                         │ • Word-Boundary Sanitization    │
+                         │ • Configurable History Retention│
+                         │ • In-Memory Temporary Failover  │
+                         └────────────────┬────────────────┘
+                                          ▼
+                         ┌─────────────────────────────────┐
+                         │       TextInjector Cascade      │
+                         │ 1. AXDirect Attribute Insert    │
+                         │ 2. Target Focus Verification    │
+                         │ 3. Cmd+V Paste (Lease & Restore)│
+                         │ 4. Unicode Typing + Remainder   │
+                         │ 5. Safe Clipboard Fallback      │
+                         └─────────────────────────────────┘
 ```
 
 ---
@@ -171,18 +184,24 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
 ```
 Echo/
 ├── Sources/Echo/
-│   ├── Audio/               # CoreAudio tap, ScreenCaptureKit loopback, VAD, WAV encoder
-│   ├── Engine/              # Phonon process runner, STT types, MeetingCoordinator
+│   ├── Audio/               # AudioHub, CoreAudio tap, ScreenCaptureKit loopback, VAD, temp scratch
+│   ├── Engine/              # Phonon process runner, STT types, MeetingCoordinator, NotesExtractor
 │   ├── Injection/           # TextInjector, SystemEventPoster, HotkeyManager
 │   ├── Storage/             # SQLite DatabaseManager, WordMemoryEngine, MeetingModels
 │   ├── UI/                  # Floating HUD pill, MenuBarManager, DesignSystem
 │   │   └── MeetingStudio/   # Frosted studio views, timeline, and controls
-│   └── main.swift           # Application entry point & lifecycle
+│   ├── DictationLifecycle.swift # Dictation state machine, focus binding, and recovery
+│   ├── EchoSettings.swift   # Central user defaults, engine path, device, and retention
+│   ├── AppCoordinator.swift # Central subsystem coordinator and lifecycle manager
+│   ├── EchoApp.swift        # Application entry point, CLI flags (--test, --verify-speech)
+│   └── main.swift           # Application bootstrap
+├── Tests/EchoTests/         # 167 Swift Testing unit & integration tests across 15 suites
 ├── test_samples/            # 16kHz reference audio files for automated tests
 ├── AppIconSource.png        # Elk artwork used to build the app icon
 ├── AppIcon-1024.png         # Generated 1024px master icon
 ├── AppIcon.icns             # Multi-resolution macOS squircle icon
 ├── Echo.iconset/            # Generated icon sizes packed into AppIcon.icns
+├── assemble_app.sh          # Automated release build, codesign, and bundle invariant self-test
 ├── build_app_icon.swift     # Renders the squircle icon + iconset from the source
 ├── make_icns.py             # Packs Echo.iconset into AppIcon.icns
 ├── Package.swift            # Swift package definition
@@ -223,13 +242,55 @@ Pass a different artwork path with `swift build_app_icon.swift path/to/art.png`.
 
 ### Packaging & Code Signing
 
-Run `./assemble_app.sh` to create and verify the ad-hoc-signed local application. Packaging checks use a disposable database. To verify speech readiness, use the WAV check in Quick Start. Moving a signed build into Applications or replacing it can require reauthorizing Echo in System Settings.
+Run `./assemble_app.sh` to compile the release binary, stage into `Echo.app`, embed the app icon, ad-hoc sign the bundle, and execute the automated self-test.
+
+```bash
+./assemble_app.sh
+```
+
+Moving a signed build into Applications or replacing it can require reauthorizing Echo in System Settings (**System Settings → Privacy & Security → Accessibility**).
+
+### CLI Self-Tests & Diagnostics
+
+Echo's binary provides built-in validation flags for verification and troubleshooting:
+
+```bash
+# Verify bundle structure, Info.plist, executable, and disposable database
+./Echo.app/Contents/MacOS/Echo --test
+
+# Verify engine binary availability in addition to bundle checks
+./Echo.app/Contents/MacOS/Echo --test --require-engine
+
+# Execute end-to-end inference against a test audio fixture
+./Echo.app/Contents/MacOS/Echo --test --verify-speech test_samples/short_sample_16k.wav
+```
+
+### Configuration & User Defaults
+
+Echo preferences can be customized via macOS `defaults` or environment variables:
+
+| Setting Key | Environment Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `echo.fermionPath` | `ECHO_FERMION_PATH` | Discovered in `PATH` | Absolute path to the `fermion` CLI executable |
+| `echo.fermionDevice` | `ECHO_FERMION_DEVICE` | `cpu` | Inference device (`cpu`, `mps`, `mlx`, `metal`) |
+| `echo.dictationRetention` | — | `forever` | History retention (`forever`, `thirtyDays`, `sevenDays`, `disabled`) |
+| `echo.exportDirectory` | — | `~/Documents/Echo Meetings` | Target directory for exported meeting Markdown files |
+
+Example custom configuration:
+```bash
+defaults write com.ragavij.echo echo.fermionPath "$HOME/Library/Application Support/Echo/engine/bin/fermion"
+defaults write com.ragavij.echo echo.fermionDevice mlx
+defaults write com.ragavij.echo echo.dictationRetention thirtyDays
+defaults write com.ragavij.echo echo.exportDirectory "$HOME/Documents/Obsidian/Meetings"
+```
 
 ### Running Automated Test Suites
 
 ```bash
-# Primary suite: Swift Testing (audio store, converter, VAD, SQLite,
-# word memory, formatting/injection, export, settings)
+# Primary suite: Swift Testing (167 tests across 15 suites)
+# Tests audio store, converter, sample-accurate VAD, multi-consumer AudioHub,
+# DictationLifecycle, TextInjector cascade & remainder recovery, SQLite migrations,
+# IncrementalNotesExtractor, MeetingSession export, and user settings.
 swift test
 ```
 
@@ -255,9 +316,6 @@ swiftc -module-cache-path .build/ModuleCache -target arm64-apple-macos14.0 -lsql
   Sources/Echo/Audio/*.swift Sources/Echo/Engine/*.swift Sources/Echo/Injection/*.swift \
   Sources/Echo/Storage/*.swift Sources/Echo/UI/*.swift Sources/Echo/UI/MeetingStudio/*.swift \
   Sources/Echo/AppCoordinator.swift test_injection.swift -o test_injection && ./test_injection
-
-# Full app subsystem verification (3/3)
-./Echo.app/Contents/MacOS/Echo --test
 ```
 
 ---
