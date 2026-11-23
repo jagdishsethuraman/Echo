@@ -24,7 +24,14 @@ public final class HotkeyManager: @unchecked Sendable {
     private var keyDownTime: TimeInterval = 0
     private var pendingReleaseWorkItem: DispatchWorkItem?
     
-    public init() {}
+    public var onExportMeeting: (() -> Void)?
+    private let shortcuts: KeyboardShortcuts
+    private var activeBinding: EchoShortcut?
+    private var heldKeyCode: UInt16?
+    private var previousFlags: NSEvent.ModifierFlags = []
+
+    public convenience init() { self.init(shortcuts: .shared) }
+    init(shortcuts: KeyboardShortcuts) { self.shortcuts = shortcuts }
     
     deinit {
         stopMonitoring()
@@ -39,7 +46,7 @@ public final class HotkeyManager: @unchecked Sendable {
     public func startMonitoring() {
         stopMonitoring()
         
-        // Modifier flags monitor for Control key
+        // Modifier-only bindings arrive as flag transitions.
         globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
             self?.handleFlagsChanged(event)
         }
@@ -48,18 +55,12 @@ public final class HotkeyManager: @unchecked Sendable {
             return event
         }
         
-        // KeyDown monitors for Escape (cancel) and chorded shortcuts (e.g. Ctrl+C,
-        // Ctrl+Space). The four ⇧⌘ chords are handled only by the global monitor:
-        // when Echo is frontmost, AppKit dispatches them to the menu key
-        // equivalents in `MenuBarManager`. Handling them locally as well made
-        // every toggle fire twice (INJ-05).
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            self?.handleGlobalShortcut(event)
-            self?.handleKeyDown(event)
+        let keyEvents: NSEvent.EventTypeMask = [.keyDown, .keyUp]
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: keyEvents) { [weak self] event in
+            _ = self?.routeKeyEvent(event)
         }
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            self?.handleKeyDown(event)
-            return event
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: keyEvents) { [weak self] event in
+            self?.routeKeyEvent(event) == true ? nil : event
         }
     }
     
@@ -86,31 +87,32 @@ public final class HotkeyManager: @unchecked Sendable {
     }
     
     public func handleFlagsChanged(_ event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let controlPressed = flags.contains(.control)
-        
-        // If other modifiers (Command, Option, Shift) are held down, this is not a pure dictation trigger
-        let otherModifiers = flags.intersection([.command, .option, .shift])
-        if !otherModifiers.isEmpty {
-            if isKeyDown {
-                // Chorded with another modifier key (e.g. Ctrl+Cmd+Space). Abort dictation.
-                isChorded = true
-                pendingReleaseWorkItem?.cancel()
-                pendingReleaseWorkItem = nil
-                onCancel?()
+        let binding = activeBinding ?? shortcuts[.pushToTalk]
+        let flags = event.modifierFlags.intersection(EchoShortcut.supported)
+        let prior = previousFlags
+        previousFlags = flags
+        if isKeyDown {
+            if !flags.subtracting(binding.flags).isEmpty { interruptHold() }
+            if !flags.isSuperset(of: binding.flags) {
+                heldKeyCode = nil
+                updateHold(pressed: false, at: event.timestamp)
             }
-            return
+        } else if binding.key.isEmpty, flags == binding.flags, !prior.isSuperset(of: flags) {
+            updateHold(pressed: true, at: event.timestamp)
         }
-        
-        let eventTime = event.timestamp > 0 ? event.timestamp : ProcessInfo.processInfo.systemUptime
-        
-        if controlPressed && !isKeyDown {
+    }
+
+    private func updateHold(pressed: Bool, at timestamp: TimeInterval) {
+        let eventTime = timestamp > 0 ? timestamp : ProcessInfo.processInfo.systemUptime
+        if pressed && !isKeyDown {
+            activeBinding = shortcuts[.pushToTalk]
             isKeyDown = true
             isChorded = false
             keyDownTime = eventTime
             
             // 1. If currently in locked hands-free mode, tapping Control unlocks and stops
             if isLocked {
+                isChorded = true // Suppress the release after the tap that ends lock mode.
                 isLocked = false
                 pendingReleaseWorkItem?.cancel()
                 pendingReleaseWorkItem = nil
@@ -132,7 +134,8 @@ public final class HotkeyManager: @unchecked Sendable {
             // 3. Normal initial press: start dictation
             onKeyDown?()
             
-        } else if !controlPressed && isKeyDown {
+        } else if !pressed && isKeyDown {
+            activeBinding = nil
             isKeyDown = false
             let holdDuration = eventTime - keyDownTime
             
@@ -164,25 +167,49 @@ public final class HotkeyManager: @unchecked Sendable {
         }
     }
     
-    /// Handle the system-wide ⇧⌘ shortcuts. Called from the global monitor only;
-    /// while Echo is frontmost the menu key equivalents own these chords.
-    public func handleGlobalShortcut(_ event: NSEvent) {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains([.command, .shift]) else { return }
-        guard let key = event.charactersIgnoringModifiers?.lowercased() else { return }
-
-        switch key {
-        case "e":
-            onOpenMeetingStudio?()
-        case "d":
-            onToggleDictation?()
-        case "c":
-            onCopyLastDictation?()
-        case "r":
-            onToggleMeetingRecording?()
-        default:
-            break
+    // Consume locally handled shortcuts so the menu cannot dispatch them twice.
+    @discardableResult
+    func routeKeyEvent(_ event: NSEvent) -> Bool {
+        if event.type == .keyUp {
+            guard heldKeyCode == event.keyCode else { return false }
+            heldKeyCode = nil
+            updateHold(pressed: false, at: event.timestamp)
+            return true
         }
+        if shortcuts[.pushToTalk].matches(event) {
+            if !event.isARepeat {
+                heldKeyCode = event.keyCode
+                updateHold(pressed: true, at: event.timestamp)
+            }
+            return true
+        }
+        handleKeyDown(event)
+        return handleGlobalShortcut(event)
+    }
+
+    @discardableResult
+    public func handleGlobalShortcut(_ event: NSEvent) -> Bool {
+        guard let action = ShortcutAction.allCases.first(where: {
+            $0 != .pushToTalk && shortcuts[$0].matches(event)
+        }) else { return false }
+        guard !event.isARepeat else { return true }
+        switch action {
+        case .studio: onOpenMeetingStudio?()
+        case .dictation: onToggleDictation?()
+        case .copy: onCopyLastDictation?()
+        case .meeting: onToggleMeetingRecording?()
+        case .export: onExportMeeting?()
+        case .pushToTalk: break
+        }
+        return true
+    }
+
+    private func interruptHold() {
+        guard isKeyDown, !isChorded else { return }
+        isChorded = true
+        pendingReleaseWorkItem?.cancel()
+        pendingReleaseWorkItem = nil
+        onCancel?()
     }
 
     public func handleKeyDown(_ event: NSEvent) {
@@ -196,24 +223,15 @@ public final class HotkeyManager: @unchecked Sendable {
             return
         }
         
-        // Note: the ⇧⌘E/D/C/R chords are deliberately not handled here. The
-        // menu owns them while Echo is active and the global monitor owns them
-        // elsewhere; duplicating them here fired every action twice (INJ-05).
-        
-        // If Control is physically held down and any other key is pressed,
-        // this is a chorded shortcut (e.g. Ctrl+C, Ctrl+V, Ctrl+Space, Ctrl+A).
-        if isKeyDown {
-            isChorded = true
-            pendingReleaseWorkItem?.cancel()
-            pendingReleaseWorkItem = nil
-            onCancel?()
-        }
+        interruptHold()
     }
     
     public func cancel() {
+        let wasActive = isKeyDown || isLocked || pendingReleaseWorkItem != nil
+        activeBinding = nil
+        heldKeyCode = nil
         pendingReleaseWorkItem?.cancel()
         pendingReleaseWorkItem = nil
-        let wasActive = isKeyDown || isLocked
         isKeyDown = false
         isLocked = false
         isChorded = false
@@ -274,10 +292,8 @@ public final class HotkeyManager: @unchecked Sendable {
         handleGlobalShortcut(makeShortcutEvent(characters: characters, modifiers: modifiers))
     }
 
-    /// Simulates the focused-app path (local monitor). ⇧⌘ chords are expected
-    /// to be handled by the menu here, not by HotkeyManager.
     public func simulateLocalKeyShortcut(characters: String, modifiers: NSEvent.ModifierFlags) {
-        handleKeyDown(makeShortcutEvent(characters: characters, modifiers: modifiers))
+        routeKeyEvent(makeShortcutEvent(characters: characters, modifiers: modifiers))
     }
 
     private func makeShortcutEvent(characters: String, modifiers: NSEvent.ModifierFlags) -> NSEvent {
