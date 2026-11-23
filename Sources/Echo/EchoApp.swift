@@ -96,6 +96,7 @@ struct EchoMain {
         }
 
         // Normal Launch: Initialize Menu Bar and run live event loop
+        AppUpdates.shared.start()
         MenuBarManager.shared.setupMenuBar()
         let coordinator = AppCoordinator.shared
         

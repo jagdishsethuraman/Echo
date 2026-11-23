@@ -12,10 +12,16 @@ let package = Package(
             targets: ["Echo"]
         ),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")
+    ],
     targets: [
         .executableTarget(
             name: "Echo",
-            path: "Sources/Echo"
+            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
+            path: "Sources/Echo",
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
+                                         "-Xlinker", "-rpath", "-Xlinker", "@loader_path"])]
         ),
         .testTarget(
             name: "EchoTests",

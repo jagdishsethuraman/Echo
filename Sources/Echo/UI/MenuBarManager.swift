@@ -220,6 +220,8 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
 
         menu.addItem(NSMenuItem.separator())
         
+        AppUpdates.shared.addMenuItem(to: menu)
+
         // Quit
         let quitItem = NSMenuItem(
             title: "Quit Echo",

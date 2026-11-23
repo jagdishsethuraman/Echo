@@ -242,6 +242,8 @@ Pass a different artwork path with `swift build_app_icon.swift path/to/art.png`.
 
 ### Packaging & Code Signing
 
+Official updater-enabled releases offer **Check for Updates…** in the Echo menu. The [release setup guide](docs/releases.md) covers Developer ID signing, notarization, and publishing Sparkle updates.
+
 Run `./assemble_app.sh` to compile the release binary, stage into `Echo.app`, embed the app icon, ad-hoc sign the bundle, and execute the automated self-test.
 
 ```bash

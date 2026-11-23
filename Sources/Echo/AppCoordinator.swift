@@ -26,6 +26,10 @@ public final class AppCoordinator: ObservableObject {
     private var isMeetingTransitioning = false
     private var isShuttingDown = false
     private let dictationWork = DispatchGroup()
+    var isBusyForUpdate: Bool {
+        isDictating || isMeetingActive || isMeetingTransitioning || isMeetingFinalizing ||
+        meetingCoordinator.unsavedTranscriptCount > 0 || dictationWork.wait(timeout: .now()) == .timedOut
+    }
     private var dictationRetentionTimer: Timer?
 
     private let dictation = DictationLifecycle()
