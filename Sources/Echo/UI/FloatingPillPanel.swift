@@ -4,6 +4,7 @@ import SwiftUI
 public final class FloatingPillPanel: NSPanel {
     private let stateModel: PillStateObservable
     private var dismissTimer: Timer?
+    private var presentationID = UUID()
     public var onStopRequested: (() -> Void)?
     public var onCancelRequested: (() -> Void)?
     private var lastTargetWidth: CGFloat = 370
@@ -47,9 +48,10 @@ public final class FloatingPillPanel: NSPanel {
     }
     
     public func show(state: PillState = .listening(audioLevel: 0.2, livePartial: "", isLocked: false, elapsedSeconds: 0)) {
+        presentationID = UUID()
         dismissTimer?.invalidate()
         dismissTimer = nil
-        
+
         stateModel.state = state
         reposition(for: state, animate: false)
         
@@ -72,7 +74,7 @@ public final class FloatingPillPanel: NSPanel {
         switch (oldState, state) {
         case (.listening(_, _, let oldLocked, _), .listening(_, _, let newLocked, _)):
             needsReposition = (oldLocked != newLocked) || (abs(targetWidth(for: oldState) - targetWidth(for: state)) > 20)
-        case (.idle, .listening), (.listening, .transcribing), (.transcribing, .success), (.transcribing, .error):
+        case (.idle, .listening), (.listening, .transcribing), (.transcribing, .success), (.transcribing, .notice), (.transcribing, .error):
             needsReposition = true
         default:
             needsReposition = abs(targetWidth(for: oldState) - targetWidth(for: state)) > 20
@@ -83,19 +85,23 @@ public final class FloatingPillPanel: NSPanel {
         }
         
         switch state {
-        case .success, .error:
+        case .success, .notice, .error:
             dismissTimer?.invalidate()
-            dismissTimer = Timer.scheduledTimer(withTimeInterval: 1.8, repeats: false) { [weak self] _ in
+            let presentationID = presentationID
+            dismissTimer = Timer.scheduledTimer(withTimeInterval: 1.8, repeats: false) { [weak self] timer in
                 Task { @MainActor in
-                    self?.hide()
+                    guard let self, self.presentationID == presentationID, self.dismissTimer === timer else { return }
+                    self.hide()
                 }
             }
         default:
-            break
+            dismissTimer?.invalidate()
+            dismissTimer = nil
         }
     }
     
     public func hide() {
+        let presentationID = presentationID
         dismissTimer?.invalidate()
         dismissTimer = nil
         
@@ -104,6 +110,7 @@ public final class FloatingPillPanel: NSPanel {
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             self.animator().alphaValue = 0.0
         }, completionHandler: {
+            guard self.presentationID == presentationID else { return }
             self.orderOut(nil)
             self.stateModel.state = .idle
         })
@@ -134,8 +141,8 @@ public final class FloatingPillPanel: NSPanel {
             }
         case .transcribing:
             return 280
-        case .success(let preview):
-            let text = preview.isEmpty ? "Transcribed" : preview
+        case .success(let message), .notice(let message):
+            let text = message.isEmpty ? "Transcribed" : message
             let textW = measureTextWidth(text)
             let rawWidth = max(280, 56 + textW + 28)
             let quantized = ceil(rawWidth / 30.0) * 30.0

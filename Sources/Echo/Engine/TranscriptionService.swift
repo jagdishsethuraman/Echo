@@ -30,42 +30,56 @@ public final class TranscriptionService: @unchecked Sendable {
     private let checkEngineReadiness: @Sendable () throws -> Void
     private let semaphore: AsyncSemaphore
     public let maxPendingBytes: Int
+    public let maxDictationPendingBytes: Int
+
+    // A full ten-minute dictation can follow its twelve-second live preview
+    // while meeting segments are pending on the same engine.
+    public static let defaultDictationBudget = (600 + 12) * AudioPCMBufferStore.bytesPerSecond
     
     private let stateLock = NSLock()
     private var outstanding = 0
-    private var queuedBytes = 0
+    private var meetingBytes = 0
+    private var dictationBytes = 0
 
+    /// Bytes reserved for startup, queued inference and running inference across both modes.
     public var currentQueuedBytes: Int {
-        stateLock.withLock { queuedBytes }
+        stateLock.withLock { meetingBytes + dictationBytes }
     }
     
     public init(
         runner: PhononProcessRunner,
         maxConcurrent: Int = 1,
         maxPendingBytes: Int = 3_840_000,
-        tempDirectory: URL = AudioTempDirectory.rootURL
+        maxDictationPendingBytes: Int = TranscriptionService.defaultDictationBudget,
+        tempDirectory: URL? = nil
     ) {
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
-        self.maxPendingBytes = maxPendingBytes
+        self.maxPendingBytes = max(0, maxPendingBytes)
+        self.maxDictationPendingBytes = min(max(0, maxDictationPendingBytes), Int.max - self.maxPendingBytes)
         self.checkEngineReadiness = { try runner.checkReadiness() }
         self.engine = { pcmData in
             let wavData = AudioBufferConverter.packageWAV(pcmData: pcmData, sampleRate: 16000, channels: 1)
-            let tempFile = tempDirectory.appendingPathComponent("echo_segment_\(UUID().uuidString).wav")
+            let tempFile = try AudioTempDirectory.writeTempWAV(
+                data: wavData, prefix: "echo_segment", root: tempDirectory
+            )
             defer { try? FileManager.default.removeItem(at: tempFile) }
-            
-            try wavData.write(to: tempFile, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempFile.path)
             let (text, _) = try await runner.transcribe(fileURL: tempFile)
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
     
     /// Test seam: drive the queue with a closure instead of a child process.
-    init(engine: @escaping Engine, maxConcurrent: Int = 1, maxPendingBytes: Int = 3_840_000) {
+    init(
+        engine: @escaping Engine,
+        maxConcurrent: Int = 1,
+        maxPendingBytes: Int = 3_840_000,
+        maxDictationPendingBytes: Int = TranscriptionService.defaultDictationBudget
+    ) {
         self.engine = engine
         self.checkEngineReadiness = {}
         self.semaphore = AsyncSemaphore(limit: max(1, maxConcurrent))
-        self.maxPendingBytes = maxPendingBytes
+        self.maxPendingBytes = max(0, maxPendingBytes)
+        self.maxDictationPendingBytes = min(max(0, maxDictationPendingBytes), Int.max - self.maxPendingBytes)
     }
 
     /// Check that the configured engine executable is available before capture.
@@ -88,31 +102,27 @@ public final class TranscriptionService: @unchecked Sendable {
         pcmData: Data,
         completion: @escaping ReportingCompletion
     ) -> Task<Void, Never> {
-        let shouldReject: TranscriptionError? = stateLock.withLock {
-            if queuedBytes + pcmData.count > maxPendingBytes {
-                return TranscriptionError.queueOverloaded(bytesQueued: queuedBytes, maxBytes: maxPendingBytes)
-            }
-            outstanding += 1
-            queuedBytes += pcmData.count
-            return nil
-        }
-
-        if let error = shouldReject {
+        do {
+            let reservation = try reserveMeetingAudio(bytes: pcmData.count)
+            return submitReserved(pcmData: pcmData, reservation: reservation, completion: completion)
+        } catch {
             return Task {
                 await completion(.failure(error))
             }
         }
+    }
 
+    /// Transfer an existing startup reservation to the inference queue.
+    func submitReserved(
+        pcmData: Data,
+        reservation: Reservation,
+        completion: @escaping ReportingCompletion
+    ) -> Task<Void, Never> {
         return Task {
-            defer {
-                self.stateLock.withLock {
-                    self.outstanding -= 1
-                    self.queuedBytes -= pcmData.count
-                }
-            }
+            defer { reservation.release() }
             let result: Result<String, Error>
             do {
-                result = .success(try await transcribe(pcmData: pcmData))
+                result = .success(try await decode(pcmData: pcmData))
             } catch {
                 result = .failure(error)
             }
@@ -120,24 +130,75 @@ public final class TranscriptionService: @unchecked Sendable {
         }
     }
     
-    /// Transcribe one 16 kHz mono Int16 PCM segment.
-    ///
-    /// Concurrency is bounded by the semaphore, so calling this directly is
-    /// safe; prefer `submit` when the caller also needs drain tracking.
+    /// Transcribe one 16 kHz mono Int16 dictation using the shared inference queue.
     public func transcribe(pcmData: Data) async throws -> String {
+        let reservation = try reserve(bytes: pcmData.count, kind: \.dictationBytes, limit: maxDictationPendingBytes)
+        defer { reservation.release() }
+        return try await decode(pcmData: pcmData)
+    }
+
+    private func decode(pcmData: Data) async throws -> String {
+        try Task.checkCancellation()
         await semaphore.acquire()
         defer { semaphore.release() }
+        try Task.checkCancellation()
         return try await engine(pcmData)
     }
+
+    /// Reserve capacity as soon as speech arrives, even while capture is starting.
+    func reserveMeetingAudio(bytes: Int) throws -> Reservation {
+        try reserve(bytes: bytes, kind: \.meetingBytes, limit: maxPendingBytes)
+    }
+
+    private func reserve(
+        bytes: Int,
+        kind: ReferenceWritableKeyPath<TranscriptionService, Int>,
+        limit: Int
+    ) throws -> Reservation {
+        try stateLock.withLock {
+            let queued = self[keyPath: kind]
+            guard bytes <= limit - queued else {
+                throw TranscriptionError.queueOverloaded(bytesQueued: queued, maxBytes: limit)
+            }
+            self[keyPath: kind] += bytes
+            outstanding += 1
+        }
+        return Reservation {
+            self.stateLock.withLock {
+                self[keyPath: kind] -= bytes
+                self.outstanding -= 1
+            }
+        }
+    }
+
+    final class Reservation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var onRelease: (() -> Void)?
+
+        fileprivate init(onRelease: @escaping () -> Void) {
+            self.onRelease = onRelease
+        }
+
+        fileprivate func release() {
+            let callback = lock.withLock {
+                let callback = onRelease
+                onRelease = nil
+                return callback
+            }
+            callback?()
+        }
+
+        deinit { release() }
+    }
     
-    /// `true` when no submitted segment is queued or running.
+    /// `true` when neither mode is holding any inference reservations.
     public var isIdle: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
         return outstanding == 0
     }
     
-    /// Wait for every submitted segment to complete, or until `timeout` elapses.
+    /// Wait for every admitted segment or dictation, or until `timeout` elapses.
     /// Returns `false` when the timeout was hit.
     @discardableResult
     public func waitUntilIdle(timeout: TimeInterval) async -> Bool {
@@ -149,7 +210,6 @@ public final class TranscriptionService: @unchecked Sendable {
         return true
     }
     
-    // MARK: - Outstanding tracking
 }
 
 /// Async FIFO semaphore with a synchronous `release`.

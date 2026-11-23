@@ -43,16 +43,24 @@ open Echo.app
 *(Or build via SwiftPM: `swift build -c release`).*
 
 ### 2. Speech Engine Setup (Phonon-2 / Fermion)
-Echo utilizes on-device local inference via `phonon-2` (Parakeet-TDT 0.6B). Echo automatically locates the `fermion` binary in your PATH (`/opt/homebrew/bin`, `~/.local/bin`, or `/usr/local/bin`).
-To specify a custom binary location:
+Echo uses the local Fermion CLI and Phonon-2 model. On Apple Silicon, create a dedicated Python 3.12 environment (install Python first with `brew install python@3.12` if needed). Run from the cloned repository:
+
 ```bash
-defaults write com.ragavij.echo echo.runnerPath /path/to/fermion
+engine="$HOME/Library/Application Support/Echo/engine"
+python3.12 -m venv "$engine"
+"$engine/bin/python" -m pip install fermion-research mlx mlx-audio mlx-lm soundfile scipy zstandard
+defaults write com.ragavij.echo echo.fermionPath "$engine/bin/fermion"
+defaults write com.ragavij.echo echo.fermionDevice mlx
+"$engine/bin/fermion" transcribe phonon-2 test_samples/short_sample_16k.wav
+./Echo.app/Contents/MacOS/Echo --test --verify-speech test_samples/short_sample_16k.wav
 ```
+
+The first transcription downloads the model. Run it before starting a meeting. The second command verifies a nonempty transcript through Echo's own runner. For a different engine location use its absolute executable path in the same preference. [Fermion speech installation guide](https://www.fermionresearch.com/docs/speech/)
 
 ### 3. Grant macOS Permissions
 Echo requires standard macOS privacy permissions:
 1. **Accessibility:** Open **System Settings → Privacy & Security → Accessibility**, add **Echo**, and toggle it **ON**.
-   *(Note: Local ad-hoc developer builds may require re-toggling if the binary hash changes during development; official signed release builds retain persistent permissions).*
+   The assembly script signs ad hoc. macOS may ask you to grant permission again after replacing the app.
 2. **Microphone:** Allow microphone access when prompted (or in **Privacy & Security → Microphone**).
 3. **Screen & System Audio Recording:** Required for bot-free attendee capture in Meeting Studio (**Privacy & Security → Screen & System Audio Recording**).
 
@@ -66,7 +74,7 @@ Echo requires standard macOS privacy permissions:
 ## ✨ Core Capabilities
 
 ### 🎙️ Global Push-to-Talk & Live Streaming HUD
-- **Sub-150ms Latency:** Powered by `fermionresearch/phonon-2` (Parakeet-TDT 0.6B INT6), delivering **37.7x real-time factor**.
+- **Local inference:** Transcription latency depends on hardware, audio duration and whether the model is warm.
 - **Live 650ms Streaming:** A non-activating floating HUD pill displays partial words and an animated blinking cursor while you speak.
 - **Zero Window Focus Theft:** The HUD uses an auxiliary `NSPanel` (`canBecomeKey = false`), ensuring your active text cursor never loses focus.
 
@@ -74,14 +82,14 @@ Echo requires standard macOS privacy permissions:
 Echo automatically routes text through an intelligent injection cascade:
 1. **AXDirect Attribute Injection:** Replaces selected text directly in native Cocoa/AppKit controls with zero simulated keystrokes, without touching the clipboard.
 2. **Clipboard Placement + Synthetic Cmd+V Paste:** Writes the transcript to `NSPasteboard.general`, pastes it with `.maskCommand` isolation and a settle delay, then restores the previous clipboard contents (all pasteboard items).
-3. **Direct Unicode Typing:** Types UTF-16 code units via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events, again restoring the previous clipboard afterwards.
+3. **Direct Unicode Typing:** Types complete Unicode graphemes via `CGEventKeyboardSetUnicodeString` at a 1.5ms cadency for inputs that reject paste events, again restoring the previous clipboard afterwards.
 4. **Manual Fallback:** If every synthetic path fails, the transcript stays on the clipboard so it is never lost.
 
 ### 👥 Bot-Free Dual-Channel Meeting Studio
 - **Acoustic Loopback:** Uses macOS 14+ `ScreenCaptureKit` (`capturesAudio = true`, `excludesCurrentProcessAudio = true`) to capture meeting audio with zero acoustic echo.
 - **Rolling Energy VAD:** Automatically segments speech upon 600ms natural silence boundaries.
 - **Graphite Frost Interface:** Native `NSVisualEffectView` frosted dark-gray surfaces with a cool frost-blue accent, using a 62/38 split layout separating conversation streams from live AI notes.
-- **Markdown Notes Export:** Copies the current session as Markdown and writes a `.md` file to the configurable export folder (default `~/Documents/Echo Meetings`).
+- **Markdown Notes Export:** Saves the current session as Markdown and writes a `.md` file to the configurable export folder (default `~/Documents/Echo Meetings`).
 
 ### 🧠 Word Memory & Speech Lexicon Engine
 - **Persistent Vocabulary:** Built-in SQLite database stores phonetic replacements (e.g. `"phone on"` → `"Phonon"`, `"anti gravity"` → `"Antigravity"`).
@@ -135,7 +143,7 @@ Detailed architectural documentation is available in [ARCHITECTURE.md](ARCHITECT
    │ CoreAudio / ScreenCapture │                   │ Phonon-2 Local STT Engine │
    │ • 16kHz Mic Tap           │                   │ • FastConformer-TDT INT6  │
    │ • Speaker Loopback        │                   │ • CPU (configurable)      │
-   │ • Rolling 0.6s Energy VAD │                   │ • Sub-150ms Latency       │
+   │ • Rolling 0.6s Energy VAD │                   │ • Local inference         │
    └─────────────┬─────────────┘                   └─────────────┬─────────────┘
                  │                                               │
                  └───────────────────────┬───────────────────────┘
@@ -215,20 +223,7 @@ Pass a different artwork path with `swift build_app_icon.swift path/to/art.png`.
 
 ### Packaging & Code Signing
 
-To preserve macOS Accessibility permissions across builds, seal the bundle with an explicit designated requirement:
-
-```bash
-# 1. Stage into .app bundle
-mkdir -p Echo.app/Contents/MacOS Echo.app/Contents/Resources
-cp echo-app Echo.app/Contents/MacOS/Echo
-cp AppIcon.icns Echo.app/Contents/Resources/AppIcon.icns
-
-# 2. Ad-hoc sign with permanent designated requirement
-codesign --force --deep --sign - \
-  --identifier com.ragavij.echo \
-  -r="designated => identifier \"com.ragavij.echo\"" \
-  Echo.app
-```
+Run `./assemble_app.sh` to create and verify the ad-hoc-signed local application. Packaging checks use a disposable database. To verify speech readiness, use the WAV check in Quick Start. Moving a signed build into Applications or replacing it can require reauthorizing Echo in System Settings.
 
 ### Running Automated Test Suites
 

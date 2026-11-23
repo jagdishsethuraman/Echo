@@ -69,12 +69,19 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
         
         let scStream = SCStream(filter: filter, configuration: config, delegate: self)
         try scStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "com.echo.systemaudio.samples"))
-        
-        try await scStream.startCapture()
-        
-        stateQueue.sync {
-            self.stream = scStream
-            self.isCapturing = true
+        stateQueue.sync { stream = scStream }
+
+        do {
+            try await scStream.startCapture()
+            try stateQueue.sync {
+                guard stream === scStream else { throw CancellationError() }
+                isCapturing = true
+            }
+        } catch {
+            stateQueue.sync {
+                if stream === scStream { stream = nil }
+            }
+            throw error
         }
     }
     
@@ -98,6 +105,7 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
     public func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
         guard sampleBuffer.isValid else { return }
+        guard stateQueue.sync(execute: { self.stream === stream }) else { return }
         
         onSystemAudioBuffer?(sampleBuffer)
         
@@ -113,9 +121,13 @@ public final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegat
     }
     
     public func stream(_ stream: SCStream, didStopWithError error: Error) {
-        stateQueue.sync {
+        let wasCurrentStream = stateQueue.sync {
+            guard self.stream === stream else { return false }
+            self.stream = nil
             self.isCapturing = false
+            return true
         }
+        guard wasCurrentStream else { return }
         onSystemVolumeLevel?(0.0)
         onCaptureFailed?(error)
     }

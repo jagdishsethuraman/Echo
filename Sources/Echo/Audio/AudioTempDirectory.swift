@@ -1,108 +1,108 @@
 import Foundation
 
-/// Centralized manager for temporary audio files with strict POSIX permissions (0700 dir, 0600 files),
-/// process-level directory isolation, and PID liveness verification to prevent sweeping live recordings.
+/// Owns private audio scratch files and reclaims directories only after their owner exits.
 public enum AudioTempDirectory {
     private static let lock = NSLock()
+    private static let processID = ProcessInfo.processInfo.processIdentifier
+    // Give each run a unique directory. Older Echo versions ignore this prefix.
+    private static let processDirectoryName = "echo_pid_\(processID)_\(UUID().uuidString)"
 
-    /// Root URL for audio capture scratchpad in Application Support (fallback to NSTemporaryDirectory)
     public static var rootURL: URL {
-        lock.lock()
-        defer { lock.unlock() }
-
+        if let configuredRoot = ProcessInfo.processInfo.environment["ECHO_AUDIO_ROOT"], !configuredRoot.isEmpty {
+            return URL(fileURLWithPath: configuredRoot, isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        let dir = base.appendingPathComponent("Echo/tmp_audio", isDirectory: true)
-
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(
-                at: dir,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-        } else {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
-        }
-        return dir
+        return base.appendingPathComponent("Echo/tmp_audio", isDirectory: true)
     }
 
-    /// Process-isolated scratch directory, protecting live recordings from concurrent instances or self-tests.
     public static var currentProcessDirectory: URL {
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let dir = rootURL.appendingPathComponent("pid_\(pid)", isDirectory: true)
-
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(
-                at: dir,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-        }
-        return dir
+        let root = rootURL
+        let directory = processDirectory(in: root)
+        try? prepareDirectory(directory, in: root)
+        return directory
     }
 
-    /// Generate a unique temporary WAV URL inside the current process's isolated scratch directory.
     public static func createTempWAVURL(prefix: String = "echo_audio") -> URL {
-        return currentProcessDirectory.appendingPathComponent("\(prefix)_\(UUID().uuidString).wav")
+        currentProcessDirectory.appendingPathComponent("\(prefix)_\(UUID().uuidString).wav")
     }
 
-    /// Safely write audio data to a temporary WAV with restricted 0600 permissions
     @discardableResult
     public static func writeTempWAV(data: Data, prefix: String = "echo_audio") throws -> URL {
-        let url = createTempWAVURL(prefix: prefix)
-        try data.write(to: url, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try writeTempWAV(data: data, prefix: prefix, root: nil)
+    }
+
+    static func writeTempWAV(data: Data, prefix: String, root: URL?) throws -> URL {
+        let root = root ?? rootURL
+        let directory = processDirectory(in: root)
+        try prepareDirectory(directory, in: root)
+        let url = directory.appendingPathComponent("\(prefix)_\(UUID().uuidString).wav")
+        let fileManager = FileManager.default
+        guard fileManager.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            try? fileManager.removeItem(at: url)
+            throw CocoaError(.fileWriteUnknown, userInfo: [NSURLErrorKey: url])
+        }
         return url
     }
 
-    /// Determine if a process PID is currently alive on macOS.
+    private static func processDirectory(in root: URL) -> URL {
+        root.appendingPathComponent(processDirectoryName, isDirectory: true)
+    }
+
+    private static func prepareDirectory(_ directory: URL, in root: URL) throws {
+        try lock.withLock {
+            for path in [root, directory] {
+                try FileManager.default.createDirectory(
+                    at: path,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path.path)
+            }
+        }
+    }
+
     public static func isProcessAlive(pid: Int32) -> Bool {
         guard pid > 0 else { return false }
-        if kill(pid, 0) == 0 {
-            return true
-        }
-        return errno == EPERM
+        return kill(pid, 0) == 0 || errno != ESRCH
     }
 
-    /// Sweeps only truly orphaned audio files left behind by terminated processes.
-    /// Preserves in-flight files belonging to active processes.
     public static func sweepOrphanedAudioFiles() {
+        sweepOrphanedAudioFiles(in: rootURL)
+    }
+
+    static func sweepOrphanedAudioFiles(in root: URL) {
         let fileManager = FileManager.default
-        let currentPid = ProcessInfo.processInfo.processIdentifier
-
-        // 1. Sweep process directories in Application Support tmp_audio
-        let dir = rootURL
-        if let items = try? fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-            for item in items {
-                let name = item.lastPathComponent
-                if name.hasPrefix("pid_") {
-                    let pidString = String(name.dropFirst(4))
-                    if let pid = Int32(pidString) {
-                        // Protect own live process and any other active running Echo instance
-                        if pid == currentPid || isProcessAlive(pid: pid) {
-                            continue
-                        }
-                    }
-                    try? fileManager.removeItem(at: item)
-                } else if item.pathExtension.lowercased() == "wav" {
-                    // Loose legacy files
-                    try? fileManager.removeItem(at: item)
-                }
-            }
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey]
+        guard let entries = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: Array(keys)) else {
+            return
         }
-
-        // 2. Sweep legacy NSTemporaryDirectory echo_*.wav captures
-        let sysTemp = fileManager.temporaryDirectory
-        if let legacyFiles = try? fileManager.contentsOfDirectory(at: sysTemp, includingPropertiesForKeys: nil) {
-            for file in legacyFiles where file.lastPathComponent.hasPrefix("echo_") && file.pathExtension.lowercased() == "wav" {
-                try? fileManager.removeItem(at: file)
-            }
+        // Loose WAVs from older versions have no ownership information.
+        for entry in entries {
+            guard let pid = ownerPID(of: entry.lastPathComponent),
+                  let values = try? entry.resourceValues(forKeys: keys),
+                  values.isDirectory == true, values.isSymbolicLink == false,
+                  !isProcessAlive(pid: pid) else { continue }
+            try? fileManager.removeItem(at: entry)
         }
     }
 
-    /// Clean up the current process's temporary directory upon graceful termination.
+    private static func ownerPID(of directoryName: String) -> Int32? {
+        let parts = directoryName.split(separator: "_", omittingEmptySubsequences: false)
+        let candidate: Substring
+        if parts.count == 4, parts[0] == "echo", parts[1] == "pid", UUID(uuidString: String(parts[3])) != nil {
+            candidate = parts[2]
+        } else if parts.count == 2, parts[0] == "pid" {
+            candidate = parts[1]
+        } else {
+            return nil
+        }
+        guard let pid = Int32(candidate), pid > 0, String(pid) == candidate else { return nil }
+        return pid
+    }
+
+    /// Call after inference has drained during graceful termination.
     public static func cleanupCurrentProcess() {
-        let dir = currentProcessDirectory
-        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.removeItem(at: processDirectory(in: rootURL))
     }
 }

@@ -69,10 +69,7 @@ private struct MeetingStudioHostView: View {
             },
             onExportMarkdown: {
                 Task {
-                    var sessionWithItems = session
-                    let persistedItems = await DatabaseManager.shared.fetchActionItemsAsync(sessionId: session.id)
-                    sessionWithItems.actionItems = persistedItems.isEmpty ? session.actionItems : persistedItems
-                    await coordinator.exportSessionMarkdown(sessionWithItems)
+                    await coordinator.exportSessionMarkdown(session)
                 }
             }
         )

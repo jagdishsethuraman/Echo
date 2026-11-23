@@ -133,6 +133,18 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
             menu.addItem(notice)
         }
         
+        if DatabaseManager.shared.isUsingTemporaryStorage {
+            let notice = NSMenuItem(title: "Temporary Storage · Changes Lost on Quit", action: nil, keyEquivalent: "")
+            menu.addItem(notice)
+        }
+
+        if coordinator.meetingCoordinator.unsavedTranscriptCount > 0 {
+            let retry = NSMenuItem(title: "Retry Unsaved Transcripts", action: #selector(retryTranscriptSaves), keyEquivalent: "")
+            retry.target = self
+            retry.toolTip = coordinator.meetingCoordinator.transcriptSaveError
+            menu.addItem(retry)
+        }
+
         // Accessibility Permission Status
         let isTrusted = AXIsProcessTrusted()
         let axTitle = isTrusted ? "Accessibility Access: Granted" : "Accessibility Access: Not Granted…"
@@ -226,6 +238,8 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
             return !coordinator.isMeetingFinalizing
         case #selector(copyLastDictation):
             return !coordinator.lastTranscript.isEmpty
+        case #selector(retryTranscriptSaves):
+            return !coordinator.meetingCoordinator.isRetryingTranscriptSaves
         case #selector(deleteHistorySession(_:)):
             return !(coordinator.isMeetingActive || coordinator.isMeetingFinalizing) || !targetsCurrentSession(menuItem)
         case #selector(exportHistorySession(_:)), #selector(copyHistorySession(_:)):
@@ -283,6 +297,49 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         }
     }
     
+    @objc private func retryTranscriptSaves() {
+        Task { @MainActor in
+            await coordinator.meetingCoordinator.retryTranscriptSaves()
+            rebuildMenu()
+        }
+    }
+
+    private func makeDictationRetentionMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Standalone Dictation Retention", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: item.title)
+        let current = EchoSettings.dictationRetention
+        for retention in EchoSettings.DictationRetention.allCases {
+            let choice = NSMenuItem(title: retention.menuTitle, action: #selector(setDictationRetention(_:)), keyEquivalent: "")
+            choice.target = self
+            choice.state = retention == current ? .on : .off
+            choice.representedObject = retention.rawValue
+            submenu.addItem(choice)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func setDictationRetention(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String,
+              let retention = EchoSettings.DictationRetention(rawValue: value),
+              retention != EchoSettings.dictationRetention else { return }
+        if retention != .forever {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = retention.menuTitle + "?"
+            alert.informativeText = retention == .disabled
+                ? "Echo will delete existing standalone dictation history."
+                : "Echo will delete standalone dictations outside this time window."
+            alert.addButton(withTitle: "Apply")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+        Task { @MainActor in
+            await coordinator.setDictationRetention(retention)
+            rebuildMenu()
+        }
+    }
+
     private func makeHistoryMenuItem() -> NSMenuItem {
         let historyItem = NSMenuItem(title: "Meeting History", action: nil, keyEquivalent: "")
         let historyMenu = NSMenu(title: "Meeting History")
@@ -349,6 +406,7 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         )
         clearDictations.target = self
         historyMenu.addItem(clearDictations)
+        historyMenu.addItem(makeDictationRetentionMenuItem())
 
         historyItem.submenu = historyMenu
         return historyItem

@@ -37,12 +37,13 @@ public final class DualChannelCoordinator: @unchecked Sendable {
     
     public private(set) var micLevel: Float = 0.0
     public private(set) var systemLevel: Float = 0.0
-    public private(set) var isRecording = false
+    @MainActor public private(set) var isRecording = false
     
     public var onSegmentReady: ((TaggedAudioSegment) -> Void)?
     public var onDualLevelsUpdated: ((Float, Float) -> Void)?
     
     private let stateQueue = DispatchQueue(label: "com.echo.dualchannel.state")
+    @MainActor private var systemRetention: Task<Bool, Never>?
     private var micLevelToken: UUID?
     private var systemLevelToken: UUID?
     
@@ -77,46 +78,46 @@ public final class DualChannelCoordinator: @unchecked Sendable {
     }
     
     /// Start dual-channel meeting audio capture
+    @MainActor
     public func startMeetingCapture() async throws {
-        let shouldStart: Bool = stateQueue.sync {
-            guard !isRecording else { return false }
-            isRecording = true
-            return true
+        if let systemRetention {
+            _ = await systemRetention.value
+            return
         }
-        guard shouldStart else { return }
-        
-        // Start Mic. If the engine cannot start, roll back the recording flag
-        // so a later attempt can try again.
-        do {
-            try hub.retainMicrophone()
-        } catch {
-            stateQueue.sync { isRecording = false }
-            throw error
-        }
-        
+        try hub.retainMicrophone()
+        isRecording = true
+
         // System loopback is optional: a missing screen-recording permission
         // should not abort microphone transcription.
-        do {
-            try await hub.retainSystemAudio()
-        } catch {
-            print("System audio capture notice: \(error.localizedDescription)")
+        let retention = Task {
+            do {
+                try await hub.retainSystemAudio()
+                return true
+            } catch {
+                print("System audio capture notice: \(error.localizedDescription)")
+                return false
+            }
         }
+        systemRetention = retention
+        _ = await retention.value
     }
     
     /// Stop meeting capture
+    @MainActor
     public func stopMeetingCapture() async {
-        let shouldStop: Bool = stateQueue.sync {
-            guard isRecording else { return false }
-            isRecording = false
+        guard let systemRetention else { return }
+        self.systemRetention = nil
+        isRecording = false
+        stateQueue.sync {
             micLevel = 0.0
             systemLevel = 0.0
-            return true
         }
-        guard shouldStop else { return }
         
         hub.releaseMicrophone()
-        await hub.releaseSystemAudio()
-        
-        onDualLevelsUpdated?(0.0, 0.0)
+        if await systemRetention.value {
+            await hub.releaseSystemAudio()
+        }
+
+        if !isRecording { onDualLevelsUpdated?(0.0, 0.0) }
     }
 }

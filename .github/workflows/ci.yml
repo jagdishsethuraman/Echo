@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -32,3 +34,20 @@ jobs:
 
       - name: Assemble and verify app bundle
         run: ./assemble_app.sh
+
+      - name: Install the Apple Silicon speech runtime for release verification
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify a real speech fixture through the assembled app
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          FERMION_DEVICE: mlx
+          ECHO_FERMION_DEVICE: mlx
+        run: |
+          python -m pip install fermion-research mlx mlx-audio mlx-lm soundfile scipy zstandard
+          # Warm the model before using the app's interactive inference timeout.
+          fermion transcribe phonon-2 test_samples/short_sample_16k.wav
+          ./Echo.app/Contents/MacOS/Echo --test --verify-speech test_samples/short_sample_16k.wav
