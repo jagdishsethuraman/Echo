@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Unreleased
+## [1.5.1] - 2026-11-25
 
 ### Fixed
 
@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failed transcript writes stay available for retry. Storage recovery requires an explicit choice before starting a temporary session. Standalone dictation history has configurable retention.
 - Meeting notes use session-owned incremental extraction. Studio Copy, Studio Save and menu exports render decisions and persisted task edits from the same model. File export runs formatting and writes off the main actor.
 - The assembly check uses disposable storage. The speech verification command runs a real fixture and fails on a missing engine or empty transcript. See Quick Start for the local engine setup.
+
+### Documentation
+
+- Updated `README.md` with `DictationLifecycle`, untyped remainder recovery, multi-consumer `AudioHub` ownership, `--test --verify-speech <wav>` CLI verification, and `UserDefaults` configuration table.
 
 ## [1.5.0] - 2026-11-20
 
