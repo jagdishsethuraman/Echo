@@ -165,9 +165,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         let meetingItem = NSMenuItem(
             title: "Open Meeting Studio",
             action: #selector(openMeetingStudio),
-            keyEquivalent: "e"
+            keyEquivalent: KeyboardShortcuts.shared[.studio].key
         )
-        meetingItem.keyEquivalentModifierMask = [.command, .shift]
+        meetingItem.keyEquivalentModifierMask = KeyboardShortcuts.shared[.studio].flags
         meetingItem.target = self
         menu.addItem(meetingItem)
         
@@ -176,9 +176,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         let dictateItem = NSMenuItem(
             title: dictateTitle,
             action: #selector(toggleDictation),
-            keyEquivalent: "d"
+            keyEquivalent: KeyboardShortcuts.shared[.dictation].key
         )
-        dictateItem.keyEquivalentModifierMask = [.command, .shift]
+        dictateItem.keyEquivalentModifierMask = KeyboardShortcuts.shared[.dictation].flags
         dictateItem.target = self
         menu.addItem(dictateItem)
         
@@ -187,9 +187,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         let copyLastItem = NSMenuItem(
             title: "Copy Last Dictation",
             action: #selector(copyLastDictation),
-            keyEquivalent: "c"
+            keyEquivalent: KeyboardShortcuts.shared[.copy].key
         )
-        copyLastItem.keyEquivalentModifierMask = [.command, .shift]
+        copyLastItem.keyEquivalentModifierMask = KeyboardShortcuts.shared[.copy].flags
         copyLastItem.isEnabled = hasLastTranscript
         copyLastItem.target = self
         menu.addItem(copyLastItem)
@@ -198,9 +198,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         let recordItem = NSMenuItem(
             title: coordinator.isMeetingFinalizing ? "Finalizing Meeting…" : (coordinator.isMeetingActive ? "Stop Meeting Recording" : "Start Meeting Recording"),
             action: #selector(toggleMeetingRecording),
-            keyEquivalent: "r"
+            keyEquivalent: KeyboardShortcuts.shared[.meeting].key
         )
-        recordItem.keyEquivalentModifierMask = [.command, .shift]
+        recordItem.keyEquivalentModifierMask = KeyboardShortcuts.shared[.meeting].flags
         recordItem.target = self
         menu.addItem(recordItem)
         
@@ -210,8 +210,9 @@ public final class MenuBarManager: NSObject, NSMenuDelegate, NSMenuItemValidatio
         let exportItem = NSMenuItem(
             title: "Export Current Session to Markdown…",
             action: #selector(exportLastMeeting),
-            keyEquivalent: ""
+            keyEquivalent: KeyboardShortcuts.shared[.export].key
         )
+        exportItem.keyEquivalentModifierMask = KeyboardShortcuts.shared[.export].flags
         exportItem.target = self
         menu.addItem(exportItem)
         

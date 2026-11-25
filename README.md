@@ -117,7 +117,9 @@ Echo automatically routes text through an intelligent injection cascade:
 | **`⇧⌘R`** | **Start/Stop Meeting** | Begin or conclude dual-channel meeting recording |
 | **`⌘Q`** | **Quit Echo** | Conclude audio streams and exit application |
 
-The `⇧⌘` chords require Accessibility access to work while another app is frontmost. When Echo itself is focused they are dispatched by the app menu.
+These are the defaults. Open **Meeting Studio → Keyboard Shortcuts** (the keyboard button) to change push-to-talk, dictation, copy, Studio, meeting recording, or to assign a shortcut for exporting the current meeting. Choose modifiers and a letter, digit, or Space. For modifier-only push-to-talk, choose **None** under Key. Select **Save** to apply immediately. **Restore Defaults** followed by **Save** restores the original bindings.
+
+Global shortcuts require Accessibility access while another app is frontmost. A tap by itself does nothing. Hold the shortcut for 0.3 seconds and start speaking when the bubble appears. Two quick taps within 0.38 seconds lock recording on. If a single modifier interferes with your workflow, try **Control + Shift + Space** for Push to Talk, provided it is available in your editor. You can also use Toggle Dictation (default **Shift + Command + D**) to start and finish hands-free. Escape cancels push-to-talk; double-tap the configured push-to-talk combination for hands-free recording.
 
 ---
 
