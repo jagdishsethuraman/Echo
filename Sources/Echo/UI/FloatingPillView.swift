@@ -10,6 +10,7 @@ public enum PillState: Equatable, Sendable {
 }
 
 public struct FloatingPillView: View {
+    @ObservedObject private var shortcuts = KeyboardShortcuts.shared
     public let state: PillState
     public var onStop: (() -> Void)?
     public var onCancel: (() -> Void)?
@@ -55,6 +56,7 @@ public struct FloatingPillView: View {
                     .font(EchoFont.timer)
                     .foregroundStyle(isLocked ? EchoTheme.accent : EchoTheme.textSecondary)
                     .monospacedDigit()
+                    .fixedSize()
 
                 if isLocked {
                     HStack(spacing: 3) {
@@ -68,29 +70,23 @@ public struct FloatingPillView: View {
                     .background(Capsule().fill(EchoTheme.accent.opacity(0.14)))
                     .overlay(Capsule().strokeBorder(EchoTheme.accent.opacity(0.24), lineWidth: 1))
                     .foregroundStyle(EchoTheme.accent)
-                    .transition(.opacity.combined(with: .scale))
+                    .fixedSize()
                 }
 
-                if livePartial.isEmpty {
-                    Text(isLocked ? "Hands-free · tap ⌃ or Stop · Esc to cancel" : "Listening — hold ⌃ to talk · Esc to cancel")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(EchoTheme.textSecondary)
-                        .lineLimit(1)
-                } else {
-                    HStack(spacing: 3) {
+                Group {
+                    if livePartial.isEmpty {
+                        Text(isLocked ? "Hands-free · tap Stop to finish" : "Listening · hold \(shortcuts[.pushToTalk].label) to talk")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(EchoTheme.textSecondary)
+                    } else {
                         Text(livePartial)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(EchoTheme.textPrimary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-
-                        Rectangle()
-                            .fill(EchoTheme.accent)
-                            .frame(width: 1.5, height: 13)
+                            .truncationMode(.head)
                     }
                 }
-
-                Spacer(minLength: 4)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 6) {
                     Button {
@@ -99,7 +95,7 @@ public struct FloatingPillView: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 8.5, weight: .bold))
                             .foregroundStyle(EchoTheme.textSecondary)
-                            .frame(width: 20, height: 20)
+                            .frame(width: 24, height: 24)
                             .background(Circle().fill(EchoTheme.controlBackground))
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -115,14 +111,14 @@ public struct FloatingPillView: View {
                                 .font(.system(size: 10.5, weight: .semibold))
                         }
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4.5)
+                        .lineLimit(1)
+                        .frame(width: 56, height: 24)
                         .background(Capsule().fill(EchoTheme.recordingRed))
-                        .shadow(color: EchoTheme.recordingRed.opacity(0.3), radius: 3, y: 1)
                     }
                     .buttonStyle(AtelierButtonStyle())
-                    .help("Finish & transcribe (⌃)")
+                    .help("Finish & transcribe (\(shortcuts[.pushToTalk].label))")
                 }
+                .fixedSize()
 
             case .transcribing:
                 ProgressView()
@@ -167,7 +163,8 @@ public struct FloatingPillView: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 38)
+        .frame(maxWidth: .infinity)
+        .frame(height: FloatingPillPanel.pillHeight)
         .glassmorphicPill()
     }
 }

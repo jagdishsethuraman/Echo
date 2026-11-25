@@ -96,6 +96,7 @@ struct EchoMain {
         }
 
         // Normal Launch: Initialize Menu Bar and run live event loop
+        AppUpdates.shared.start()
         MenuBarManager.shared.setupMenuBar()
         let coordinator = AppCoordinator.shared
         
@@ -104,7 +105,7 @@ struct EchoMain {
             coordinator.showMeetingStudio()
         }
         
-        print("Echo Speech Intelligence running. Hold ⌃ Control to dictate (or double-tap ⌃ to lock). Meeting Studio opened.")
+        print("Echo Speech Intelligence running. Hold \(KeyboardShortcuts.shared[.pushToTalk].label) to dictate. Meeting Studio opened.")
         withExtendedLifetime(delegate) { app.run() }
     }
 
@@ -118,6 +119,13 @@ struct EchoMain {
               bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String == "Echo",
               bundle.url(forResource: "AppIcon", withExtension: "icns") != nil else {
             throw failure("Run this check from an assembled Echo.app containing its executable, Info.plist and AppIcon.")
+        }
+        if arguments.contains("--verify-updater") {
+            guard bundle.object(forInfoDictionaryKey: "SUPublicEDKey") is String else {
+                throw failure("The updater check requires a configured Sparkle public key.")
+            }
+            try await AppUpdates.verifyStartup()
+            print("Sparkle updater startup passed.")
         }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("echo-smoke-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

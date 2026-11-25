@@ -23,7 +23,47 @@ private final class EventCounter: @unchecked Sendable {
 @Suite("HotkeyManager", .serialized)
 struct HotkeyManagerTests {
     
-    @Test func pushToTalkHoldAndRelease() async {
+    @MainActor @Test func runningMonitorReattachesAfterGrantAndFinishesHoldOnRevocation() async throws {
+        var trusted = false
+        var handlers: [(NSEvent) -> Void] = []
+        var removed: [Int] = []
+        let shortcuts = KeyboardShortcuts(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let manager = HotkeyManager(shortcuts: shortcuts, checkTrust: { trusted }, addGlobalMonitor: { _, handler in
+            handlers.append(handler)
+            return handlers.count
+        }, removeGlobalMonitor: { removed.append($0 as! Int) })
+        var starts = 0, finishes = 0
+        manager.onKeyDown = { starts += 1 }
+        manager.onKeyUp = { finishes += 1 }
+        manager.startMonitoring()
+        defer { manager.stopMonitoring() }
+        trusted = true
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !manager.accessibilityGranted && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(manager.accessibilityGranted)
+        manager.refreshAccessibility()
+        #expect(handlers.count == 2)
+        #expect(removed == [1])
+        let event = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: .control,
+                                     timestamp: 1, windowNumber: 0, context: nil, characters: "",
+                                     charactersIgnoringModifiers: "", isARepeat: false, keyCode: 59)!
+        handlers.last?(event)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(starts == 1)
+        trusted = false
+        manager.refreshAccessibility()
+        #expect(finishes == 1)
+        #expect(!manager.isKeyDown)
+        manager.stopMonitoring()
+        trusted = true
+        manager.refreshAccessibility()
+        #expect(handlers.count == 3)
+        #expect(removed == [1, 2, 3])
+    }
+
+    @MainActor @Test func pushToTalkHoldAndRelease() async throws {
         let manager = HotkeyManager()
         let downCount = EventCounter()
         let upCount = EventCounter()
@@ -34,6 +74,8 @@ struct HotkeyManagerTests {
         // 1. Press Control
         manager.simulateFlagsChanged(flags: [.control])
         #expect(manager.isKeyDown == true)
+        #expect(downCount.value == 0)
+        try await Task.sleep(for: .milliseconds(400))
         #expect(downCount.value == 1)
         #expect(upCount.value == 0)
         
@@ -44,7 +86,7 @@ struct HotkeyManagerTests {
         #expect(manager.isLocked == false)
     }
     
-    @Test func escapeCancelsPushToTalk() {
+    @MainActor @Test func escapeCancelsPushToTalk() async throws {
         let manager = HotkeyManager()
         let downCount = EventCounter()
         let upCount = EventCounter()
@@ -57,6 +99,8 @@ struct HotkeyManagerTests {
         // 1. Press Control
         manager.simulateFlagsChanged(flags: [.control])
         #expect(manager.isKeyDown == true)
+        #expect(downCount.value == 0)
+        try await Task.sleep(for: .milliseconds(400))
         #expect(downCount.value == 1)
         
         // 2. Press Escape (key code 53)
@@ -83,12 +127,12 @@ struct HotkeyManagerTests {
         // 1. User presses Control (e.g. starting Ctrl+C)
         manager.simulateFlagsChanged(flags: [.control])
         #expect(manager.isKeyDown == true)
-        #expect(downCount.value == 1)
+        #expect(downCount.value == 0)
         
         // 2. User presses 'C' (key code 8) while Control is down
         manager.simulateKeyDown(keyCode: 8)
         #expect(manager.isChorded == true)
-        #expect(cancelCount.value == 1)
+        #expect(cancelCount.value == 0)
         #expect(upCount.value == 0)
         
         // 3. User releases Control
@@ -115,6 +159,22 @@ struct HotkeyManagerTests {
         #expect(downCount.value == 0)
     }
     
+    @MainActor @Test func quickTapDoesNotCaptureOrFinalizeAndInterveningTypingBreaksDoubleTap() async throws {
+        let manager = HotkeyManager()
+        var starts = 0, finishes = 0
+        manager.onKeyDown = { starts += 1 }
+        manager.onKeyUp = { finishes += 1 }
+        manager.simulateFlagsChanged(flags: .control)
+        manager.simulateFlagsChanged(flags: [], timeOffset: 0.05)
+        manager.simulateKeyDown(keyCode: 8)
+        manager.simulateFlagsChanged(flags: .control, timeOffset: 0.12)
+        manager.simulateFlagsChanged(flags: [], timeOffset: 0.18)
+        try await Task.sleep(for: .milliseconds(410))
+        #expect(!manager.isLocked)
+        #expect(starts == 0)
+        #expect(finishes == 0)
+    }
+
     @Test func escapeCancelsLockMode() {
         let manager = HotkeyManager()
         let cancelCount = EventCounter()
@@ -131,6 +191,8 @@ struct HotkeyManagerTests {
         manager.simulateFlagsChanged(flags: [.control])
         manager.simulateFlagsChanged(flags: [], timeOffset: 0.10)
         manager.simulateFlagsChanged(flags: [.control], timeOffset: 0.15)
+        #expect(!manager.isLocked)
+        manager.simulateFlagsChanged(flags: [], timeOffset: 0.20)
         #expect(manager.isLocked == true)
         
         // Press Escape while locked
@@ -152,6 +214,8 @@ struct HotkeyManagerTests {
         manager.simulateFlagsChanged(flags: [.control])
         manager.simulateFlagsChanged(flags: [], timeOffset: 0.10)
         manager.simulateFlagsChanged(flags: [.control], timeOffset: 0.15)
+        #expect(!manager.isLocked)
+        manager.simulateFlagsChanged(flags: [], timeOffset: 0.20)
         #expect(manager.isLocked == true)
         
         // Release Control after entering lock mode
@@ -161,6 +225,7 @@ struct HotkeyManagerTests {
         
         // Tap Control again to stop hands-free recording
         manager.simulateFlagsChanged(flags: [.control], timeOffset: 2.0)
+        manager.simulateFlagsChanged(flags: [], timeOffset: 2.1)
         #expect(manager.isLocked == false)
         #expect(upCount.value == 1)
     }
@@ -194,24 +259,15 @@ struct HotkeyManagerTests {
         #expect(meetingCount.value == 1)
     }
 
-    @Test func focusedAppShortcutsAreLeftToTheMenu() {
+    @Test func focusedAppShortcutsAreHandledOnce() {
         let manager = HotkeyManager()
         let dictateCount = EventCounter()
         let meetingCount = EventCounter()
         manager.onToggleDictation = { dictateCount.increment() }
         manager.onToggleMeetingRecording = { meetingCount.increment() }
 
-        // The local monitor must not fire the shortcut callbacks: while Echo is
-        // frontmost, the menu key equivalent owns them. Handling both paths made
-        // ⇧⌘D/⇧⌘R toggle twice (INJ-05).
         manager.simulateLocalKeyShortcut(characters: "d", modifiers: [.command, .shift])
         manager.simulateLocalKeyShortcut(characters: "r", modifiers: [.command, .shift])
-        #expect(dictateCount.value == 0)
-        #expect(meetingCount.value == 0)
-
-        // The global path still fires exactly once.
-        manager.simulateKeyShortcut(characters: "d", modifiers: [.command, .shift])
-        manager.simulateKeyShortcut(characters: "r", modifiers: [.command, .shift])
         #expect(dictateCount.value == 1)
         #expect(meetingCount.value == 1)
     }

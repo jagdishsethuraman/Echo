@@ -18,27 +18,20 @@ struct FloatingPillPanelTests {
     
     @Test func targetWidthDefaultsForFixedStates() {
         #expect(FloatingPillPanel.targetWidth(for: .idle) == 240)
-        #expect(FloatingPillPanel.targetWidth(for: .transcribing) == 280)
+        #expect(FloatingPillPanel.targetWidth(for: .transcribing) == 148)
         #expect(FloatingPillPanel.targetWidth(for: .error(message: "Failed")) == 360)
     }
     
-    @Test func targetWidthExpandsWithTypographicContent() {
-        let baseListening = FloatingPillPanel.targetWidth(for: .listening(audioLevel: 0.2, livePartial: "", isLocked: false, elapsedSeconds: 5))
-        #expect(baseListening == 370)
-        
-        let lockedListening = FloatingPillPanel.targetWidth(for: .listening(audioLevel: 0.2, livePartial: "", isLocked: true, elapsedSeconds: 5))
-        #expect(lockedListening == 410)
-        
-        // A long utterance expands the pill beyond minimum width
-        let longText = "This is a long transcribed sentence describing our architectural decisions and database schema."
-        let expanded = FloatingPillPanel.targetWidth(for: .listening(audioLevel: 0.3, livePartial: longText, isLocked: false, elapsedSeconds: 10))
-        #expect(expanded > baseListening)
-        #expect(expanded <= 720)
-        
-        // Quantization check: width must be a multiple of 30
-        #expect(Int(expanded) % 30 == 0)
+    @Test func listeningWidthStaysStableAcrossPreviewAndLockChanges() {
+        let width = FloatingPillPanel.targetWidth(for: .listening(audioLevel: 0))
+        for text in ["", "Hello, hello.", String(repeating: "Many more words ", count: 30)] {
+            for locked in [false, true] {
+                let state = PillState.listening(audioLevel: 1, livePartial: text, isLocked: locked, elapsedSeconds: 599)
+                #expect(FloatingPillPanel.targetWidth(for: state) == width)
+            }
+        }
     }
-    
+
     @Test func targetWidthForSuccessAdaptsToPreview() {
         let shortSuccess = FloatingPillPanel.targetWidth(for: .success(preview: "Done"))
         #expect(shortSuccess >= 280 && shortSuccess <= 300)

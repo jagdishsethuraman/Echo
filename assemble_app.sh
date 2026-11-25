@@ -1,32 +1,43 @@
 #!/bin/bash
 set -euo pipefail
+cd "$(dirname "$0")"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+swift build --disable-keychain -c release
+product=$(swift build -c release --show-bin-path)
+stage=$(mktemp -d .build/assembly.XXXXXX)
+trap 'rm -rf "$stage"' EXIT
+app="$stage/Echo.app"
+contents="$app/Contents"
+mkdir -p "$contents"/{MacOS,Resources,Frameworks}
+cp "$product/Echo" "$contents/MacOS/"
+cp Info.plist "$contents/"
+cp AppIcon.icns "$contents/Resources/"
+ditto "$product/Sparkle.framework" "$contents/Frameworks/Sparkle.framework"
 
-echo "==> Building Echo in release configuration..."
-swift build -c release
+if [[ -n "${ECHO_RELEASE_VERSION:-}" ]]; then
+    : "${ECHO_SIGN_IDENTITY:?}" "${SPARKLE_PUBLIC_KEY:?}"
+    plist="$contents/Info.plist"
+    plutil -replace CFBundleShortVersionString -string "$ECHO_RELEASE_VERSION" "$plist"
+    plutil -replace CFBundleVersion -string "$ECHO_RELEASE_VERSION" "$plist"
+    scripts/configure-updater.sh "$plist" "$SPARKLE_PUBLIC_KEY"
+    framework="$contents/Frameworks/Sparkle.framework"
+    nested="$framework/Versions/B"
+    sign=(codesign --force --timestamp --options runtime --sign "$ECHO_SIGN_IDENTITY")
+    for helper in "$nested"/XPCServices/*.xpc "$nested/Autoupdate" "$nested/Updater.app"; do
+        "${sign[@]}" --preserve-metadata=entitlements "$helper"
+    done
+    "${sign[@]}" "$framework"
+    "${sign[@]}" --entitlements scripts/Echo.entitlements "$app"
+else
+    codesign --force --sign - --identifier com.ragavij.echo "$app"
+fi
 
-echo "==> Assembling Echo.app bundle..."
-mkdir -p Echo.app/Contents/MacOS Echo.app/Contents/Resources
-
-cp .build/release/Echo Echo.app/Contents/MacOS/Echo
-chmod +x Echo.app/Contents/MacOS/Echo
-cp Info.plist Echo.app/Contents/Info.plist
-cp AppIcon.icns Echo.app/Contents/Resources/AppIcon.icns
-
-echo "==> Ad-hoc code signing Echo.app..."
-codesign --force --deep --sign - --identifier com.ragavij.echo Echo.app
-
-echo "==> Verifying bundle structure..."
-test -f Echo.app/Contents/Info.plist || { echo "❌ Info.plist missing!"; exit 1; }
-test -x Echo.app/Contents/MacOS/Echo || { echo "❌ Executable missing or not executable!"; exit 1; }
-test -f Echo.app/Contents/Resources/AppIcon.icns || { echo "❌ AppIcon.icns missing!"; exit 1; }
-
-echo "==> Verifying signature..."
-codesign --verify --deep --strict --verbose=2 Echo.app
-
-echo "==> Running self-test..."
-./Echo.app/Contents/MacOS/Echo --test
-
-echo "==> Echo.app successfully assembled and verified!"
+codesign --verify --deep --strict --verbose=2 "$app"
+if [[ -n "${ECHO_RELEASE_VERSION:-}" ]]; then
+    "$contents/MacOS/Echo" --test --verify-updater -SUEnableAutomaticChecks NO
+else
+    "$contents/MacOS/Echo" --test
+fi
+if [[ -e Echo.app ]]; then mv Echo.app "$stage/previous.app"; fi
+mv "$app" Echo.app
+echo "Assembled and verified Echo.app"

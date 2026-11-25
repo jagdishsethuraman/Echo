@@ -35,6 +35,16 @@ jobs:
       - name: Assemble and verify app bundle
         run: ./assemble_app.sh
 
+      - name: Verify packaged Sparkle startup with a disposable key
+        run: |
+          probe="$RUNNER_TEMP/updater-check/Echo.app"
+          mkdir -p "$(dirname "$probe")"
+          ditto Echo.app "$probe"
+          key=$(swift -e 'import CryptoKit; import Foundation; print(Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString())')
+          scripts/configure-updater.sh "$probe/Contents/Info.plist" "$key"
+          codesign --force --sign - "$probe"
+          "$probe/Contents/MacOS/Echo" --test --verify-updater -SUEnableAutomaticChecks NO
+
       - name: Install the Apple Silicon speech runtime for release verification
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: actions/setup-python@v5
@@ -51,3 +61,85 @@ jobs:
           # Warm the model before using the app's interactive inference timeout.
           fermion transcribe phonon-2 test_samples/short_sample_16k.wav
           ./Echo.app/Contents/MacOS/Echo --test --verify-speech test_samples/short_sample_16k.wav
+
+  publish-release:
+    name: Sign, notarize and publish stable update
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-test
+    runs-on: macos-15
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+    concurrency:
+      group: echo-stable-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify stable version and publication order
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          latest=$(gh release view --json tagName --jq .tagName)
+          python3 - "$RELEASE_TAG" "$latest" <<'PY'
+          import os, re, sys
+          def version(tag):
+              if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+                  raise SystemExit(f"Expected a stable vMAJOR.MINOR.PATCH tag, got {tag}")
+              return tuple(map(int, tag[1:].split(".")))
+          if version(sys.argv[1]) <= version(sys.argv[2]):
+              raise SystemExit("The update must be newer than the current stable release")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              print("ECHO_RELEASE_VERSION=" + sys.argv[1][1:], file=env)
+          PY
+
+      - name: Build and sign with Developer ID
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+          DEVELOPER_ID_P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: scripts/sign-release.sh
+
+      - name: Notarize and staple the app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent Echo.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$NOTARY_PASSWORD" --wait
+          xcrun stapler staple Echo.app
+          xcrun stapler validate Echo.app
+          spctl --assess --type execute --verbose Echo.app
+          codesign --verify --deep --strict Echo.app
+
+      - name: Sign update archive and feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          mkdir updates
+          archive="Echo-${ECHO_RELEASE_VERSION}-macOS-arm64.zip"
+          lipo -verify_arch arm64 Echo.app/Contents/MacOS/Echo
+          ditto -c -k --keepParent Echo.app "updates/$archive"
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file - --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/" updates
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/sign_update --verify --ed-key-file - updates/appcast.xml
+          swift scripts/verify-update.swift updates/appcast.xml "updates/$archive" "$SPARKLE_PUBLIC_KEY" "$ECHO_RELEASE_VERSION"
+
+      - name: Publish archive and appcast together
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft > "$RUNNER_TEMP/release-state"; then
+            test "$(cat "$RUNNER_TEMP/release-state")" = true
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" updates/*.zip updates/appcast.xml --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

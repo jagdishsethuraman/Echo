@@ -43,6 +43,7 @@ public struct MeetingStudioView: View {
     public var micLevel: Float { audioLevels.micLevel }
     public var systemLevel: Float { audioLevels.systemLevel }
 
+    @State private var showShortcuts = false
     @State private var searchFilter: String = ""
     @State private var showNotesCopied: Bool = false
     @State private var newActionText: String = ""
@@ -136,7 +137,6 @@ public struct MeetingStudioView: View {
     }
 
     private func refreshPermissions() {
-        isAccessibilityTrusted = AXIsProcessTrusted()
         isMicrophoneAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
@@ -201,6 +201,9 @@ public struct MeetingStudioView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshPermissions()
         }
+        .onReceive(coordinator.hotkeyManager.$accessibilityGranted) { granted in
+            isAccessibilityTrusted = granted
+        }
         .onChange(of: session.id) { _, newId in
             loadSessionData(for: newId)
         }
@@ -246,6 +249,11 @@ public struct MeetingStudioView: View {
             }
 
             Spacer(minLength: 12)
+
+            Button { showShortcuts = true } label: { Image(systemName: "keyboard") }
+                .accessibilityLabel("Keyboard Shortcuts")
+                .help("Keyboard Shortcuts")
+                .sheet(isPresented: $showShortcuts) { ShortcutSettingsView() }
 
             LiveAudioMetersCluster(levels: audioLevels)
 

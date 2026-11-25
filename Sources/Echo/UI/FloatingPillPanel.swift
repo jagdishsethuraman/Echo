@@ -7,12 +7,13 @@ public final class FloatingPillPanel: NSPanel {
     private var presentationID = UUID()
     public var onStopRequested: (() -> Void)?
     public var onCancelRequested: (() -> Void)?
-    private var lastTargetWidth: CGFloat = 370
+    static let listeningWidth: CGFloat = 480
+    static let pillHeight: CGFloat = 38
     
     public init() {
         self.stateModel = PillStateObservable()
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 370, height: 52),
+            contentRect: NSRect(x: 0, y: 0, width: Self.listeningWidth, height: Self.pillHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -22,7 +23,7 @@ public final class FloatingPillPanel: NSPanel {
         self.level = .popUpMenu
         self.isOpaque = false
         self.backgroundColor = .clear
-        self.hasShadow = false
+        self.hasShadow = true
         self.appearance = NSAppearance(named: .darkAqua)
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         self.isMovableByWindowBackground = false
@@ -33,7 +34,12 @@ public final class FloatingPillPanel: NSPanel {
             onCancel: { [weak self] in self?.onCancelRequested?() }
         )
         let hostingView = NSHostingView(rootView: container)
+        hostingView.sizingOptions = []
         hostingView.wantsLayer = true
+        // Clip the AppKit surface too, including frames between animated sizes.
+        hostingView.layer?.isOpaque = false
+        hostingView.layer?.cornerRadius = Self.pillHeight / 2
+        hostingView.layer?.masksToBounds = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
         hostingView.autoresizingMask = [.width, .height]
         self.contentView = hostingView
@@ -69,18 +75,7 @@ public final class FloatingPillPanel: NSPanel {
         let oldState = stateModel.state
         stateModel.state = state
         
-        // Only trigger reposition if the structural layout changed (e.g. state type, lock toggle, or broad text bucket)
-        let needsReposition: Bool
-        switch (oldState, state) {
-        case (.listening(_, _, let oldLocked, _), .listening(_, _, let newLocked, _)):
-            needsReposition = (oldLocked != newLocked) || (abs(targetWidth(for: oldState) - targetWidth(for: state)) > 20)
-        case (.idle, .listening), (.listening, .transcribing), (.transcribing, .success), (.transcribing, .notice), (.transcribing, .error):
-            needsReposition = true
-        default:
-            needsReposition = abs(targetWidth(for: oldState) - targetWidth(for: state)) > 20
-        }
-        
-        if needsReposition {
+        if Self.targetWidth(for: oldState) != Self.targetWidth(for: state) {
             reposition(for: state, animate: true)
         }
         
@@ -127,20 +122,10 @@ public final class FloatingPillPanel: NSPanel {
         switch state {
         case .idle:
             return 240
-        case .listening(_, let livePartial, let isLocked, _):
-            let minWidth: CGFloat = isLocked ? 410 : 370
-            let chromeWidth: CGFloat = isLocked ? 290 : 230
-            if livePartial.isEmpty {
-                return minWidth
-            } else {
-                // Typographic measurement via NSAttributedString, quantized in 30pt buckets (UX-03)
-                let textW = measureTextWidth(livePartial)
-                let rawWidth = max(minWidth, chromeWidth + textW)
-                let quantized = ceil(rawWidth / 30.0) * 30.0
-                return min(720, max(minWidth, quantized))
-            }
+        case .listening:
+            return listeningWidth
         case .transcribing:
-            return 280
+            return 148
         case .success(let message), .notice(let message):
             let text = message.isEmpty ? "Transcribed" : message
             let textW = measureTextWidth(text)
@@ -150,10 +135,6 @@ public final class FloatingPillPanel: NSPanel {
         case .error:
             return 360
         }
-    }
-    
-    private func targetWidth(for state: PillState) -> CGFloat {
-        return Self.targetWidth(for: state)
     }
     
     /// Target screen: chooses the monitor containing the mouse pointer, falling back to main display (UX-03)
@@ -169,8 +150,8 @@ public final class FloatingPillPanel: NSPanel {
         guard let screen = targetScreen else { return }
         
         let screenRect = screen.visibleFrame
-        let panelW: CGFloat = targetWidth(for: state)
-        let panelH: CGFloat = 52
+        let panelW = min(Self.targetWidth(for: state), screenRect.width)
+        let panelH = Self.pillHeight
         
         // Bottom-Center screen positioning: keep the 38pt pill 24px above the Dock/bottom edge
         let x = round(screenRect.midX - (panelW / 2))
@@ -183,8 +164,6 @@ public final class FloatingPillPanel: NSPanel {
            abs(self.frame.origin.y - targetFrame.origin.y) < 1.0 {
             return
         }
-        
-        lastTargetWidth = panelW
         
         if animate {
             NSAnimationContext.runAnimationGroup { context in

@@ -77,6 +77,29 @@ struct TextInjectorTests {
     
     // MARK: - Formatting
     
+    @Test func webEditorFocusResolvesToItsEditableAncestorOnly() {
+        let leaf = AXUIElementCreateSystemWide()
+        let editor = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var role = kAXTextAreaRole
+        var subrole: String?
+        func read(_ element: AXUIElement, _ key: String) -> AnyObject? {
+            if CFEqual(element, leaf) {
+                if key == kAXRoleAttribute { return kAXStaticTextRole as NSString }
+                if key == "AXEditableAncestor" { return editor }
+            } else {
+                if key == kAXRoleAttribute { return role as NSString }
+                if key == kAXSubroleAttribute { return subrole as NSString? }
+            }
+            return nil
+        }
+        #expect(FocusedDictationField.editableField(for: leaf, read: read) == editor)
+        role = "AXWebArea"
+        #expect(FocusedDictationField.editableField(for: leaf, read: read) == nil)
+        role = kAXTextFieldRole
+        subrole = kAXSecureTextFieldSubrole
+        #expect(FocusedDictationField.editableField(for: leaf, read: read) == nil)
+    }
+
     @Test func capitalizesFirstLetterAndSentences() {
         #expect(TextInjector.formatSentencePunctuationAndCapitalization("hello world") == "Hello world")
         #expect(TextInjector.formatSentencePunctuationAndCapitalization("hello. next one? and more! done") == "Hello. Next one? And more! Done")
