@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## Unreleased
+## [1.6.0] - 2026-11-25
 
-- Signed releases support in-app updates from the Echo menu. Echo defers the update relaunch while a recording or transcript save is pending.
-- Studio can customize dictation and meeting shortcuts. A quick modifier tap leaves recording idle, and Echo reconnects global shortcuts when Accessibility permission changes.
-- Dictation recognizes editable ancestors in web-based message boxes. The recording bubble keeps its capsule shape and Stop button layout as the transcript changes.
+### Added
+
+- Signed releases support in-app updates via Sparkle 2 from the Echo menu (`AppUpdates.swift`, `Package.swift`), with relaunch deferral while a recording, finalization, or transcript write is pending.
+- Studio can customize dictation and meeting shortcuts (`ShortcutSettingsView`, `KeyboardShortcuts`).
+- Added Developer ID signing, notarization, and appcast CI pipeline (`scripts/sign-release.sh`, `scripts/configure-updater.sh`, `scripts/verify-update.swift`, `docs/releases.md`).
+
+### Fixed
+
+- A quick modifier tap leaves recording idle, intervening typing breaks double-tap lock sequences, and Echo reconnects global shortcuts live when Accessibility permission changes.
+- Dictation recognizes editable ancestors in web-based message boxes (`FocusedDictationField`).
+- The recording bubble keeps its capsule shape and Stop button layout steady during dictation.
 
 ## [1.5.1] - 2026-11-25
 
